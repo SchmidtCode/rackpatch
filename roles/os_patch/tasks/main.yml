@@ -1,0 +1,46 @@
+---
+- name: Refresh apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: not dry_run | default(false) | bool
+
+- name: Perform dist upgrade
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: true
+  when: not dry_run | default(false) | bool
+
+- name: Check whether reboot is required
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_required_file
+
+- name: Report dry-run patch decision
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      dry_run: "{{ dry_run | default(false) | bool }}"
+      reboot_required: "{{ reboot_required_file.stat.exists | default(false) }}"
+
+- name: Report deferred reboot requirement
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      reboot_required: true
+      auto_reboot: false
+      action: deferred-reboot
+  when:
+    - reboot_required_file.stat.exists
+    - not dry_run | default(false) | bool
+    - not (auto_reboot | default(true) | bool)
+
+- name: Reboot host when required and allowed
+  ansible.builtin.reboot:
+    msg: Managed by ops-controller
+    reboot_timeout: 1800
+  when:
+    - reboot_allowed | default(true)
+    - reboot_required_file.stat.exists
+    - not dry_run | default(false) | bool
+    - auto_reboot | default(true) | bool

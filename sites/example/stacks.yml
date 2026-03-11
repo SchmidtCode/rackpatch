@@ -1,0 +1,19 @@
+stacks:
+  - name: dashboard
+    host: apps-vm
+    guest_host: apps-vm
+    project_dir: /srv/compose/dashboard
+    compose_env_files:
+      - .env
+      - compose-images.envvars
+    risk: low
+    update_mode: auto-windowed
+    image_strategy: env-ref
+    healthcheck:
+      type: url
+      target: http://192.168.10.20:8080
+    backup_before: false
+    snapshot_before: false
+    stop_order: 10
+    start_order: 10
+

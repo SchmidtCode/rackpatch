@@ -1,0 +1,169 @@
+---
+- name: Run common stack prechecks
+  ansible.builtin.include_role:
+    name: common_prechecks
+
+- name: Resolve stack project directory
+  ansible.builtin.set_fact:
+    stack_project_dir: "{{ stack.path | default(stack.project_dir) }}"
+
+- name: Snapshot guest before risky stack update
+  ansible.builtin.include_role:
+    name: proxmox_guest_snapshot
+  vars:
+    snapshot_reason: "stack-update-{{ stack.name }}"
+  when:
+    - stack.snapshot_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Freeze stack update stamp
+  ansible.builtin.set_fact:
+    stack_update_stamp: "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+  when: not dry_run | default(false) | bool
+
+- name: Ensure backup root exists
+  ansible.builtin.file:
+    path: "{{ backup_root }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Ensure rollback root exists for stack
+  ansible.builtin.file:
+    path: "{{ rollback_root }}/{{ stack.name }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  when: not dry_run | default(false) | bool
+
+- name: Capture rollback metadata before pull
+  ansible.builtin.shell: >-
+    python3 /workspace/scripts/capture_rollback.py
+    --stack-name {{ stack.name | quote }}
+    --stack-path {{ stack_project_dir | quote }}
+    --output {{ (rollback_root ~ '/' ~ stack.name ~ '/' ~ stack_update_stamp ~ '.json') | quote }}
+    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file | quote }}{% endfor %}
+  delegate_to: "{{ stack.host }}"
+  changed_when: false
+  when: not dry_run | default(false) | bool
+
+- name: Update latest rollback pointer
+  ansible.builtin.copy:
+    src: "{{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
+    dest: "{{ rollback_root }}/{{ stack.name }}/latest.json"
+    remote_src: true
+    mode: '0644'
+  delegate_to: localhost
+  when: not dry_run | default(false) | bool
+
+- name: Emit rollback artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=rollback stack={{ stack.name }} value={{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
+  when: not dry_run | default(false) | bool
+
+- name: Capture stack backup archive when requested
+  ansible.builtin.archive:
+    path: "{{ stack_project_dir }}"
+    dest: "{{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
+    format: gz
+  delegate_to: "{{ stack.host }}"
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Emit backup archive artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Run stack-specific backup commands
+  ansible.builtin.shell: "{{ backup_command }}"
+  args:
+    chdir: "{{ stack_project_dir }}"
+  environment:
+    BACKUP_ROOT: "{{ backup_root }}"
+    STACK_UPDATE_STAMP: "{{ stack_update_stamp }}"
+  delegate_to: "{{ stack.host }}"
+  loop: "{{ stack.backup_commands | default([]) }}"
+  loop_control:
+    loop_var: backup_command
+  changed_when: true
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Discover stack-specific backup artifacts
+  ansible.builtin.find:
+    paths: "{{ backup_root }}"
+    patterns: "*{{ stack_update_stamp }}*"
+    file_type: file
+  register: stack_backup_artifacts
+  delegate_to: localhost
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Emit stack-specific backup artifact markers
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ item.path }}"
+  loop: "{{ stack_backup_artifacts.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - stack.backup_before | bool
+    - not dry_run | default(false) | bool
+
+- name: Validate compose config
+  ansible.builtin.shell: >-
+    /workspace/scripts/compose-wrapper.sh
+    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
+    config
+  args:
+    chdir: "{{ stack_project_dir }}"
+  delegate_to: "{{ stack.host }}"
+  changed_when: false
+
+- name: Report dry-run decision for stack
+  ansible.builtin.debug:
+    msg:
+      stack: "{{ stack.name }}"
+      host: "{{ stack.host }}"
+      dry_run: "{{ dry_run | default(false) | bool }}"
+      action: "{{ 'validate-only' if (dry_run | default(false) | bool) else 'apply-update' }}"
+
+- name: Pull images for stack
+  ansible.builtin.shell: >-
+    /workspace/scripts/compose-wrapper.sh
+    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
+    pull
+  args:
+    chdir: "{{ stack_project_dir }}"
+  delegate_to: "{{ stack.host }}"
+  register: stack_pull
+  retries: 3
+  delay: 15
+  until: stack_pull.rc == 0
+  when: not dry_run | default(false) | bool
+
+- name: Recreate stack with current desired refs
+  ansible.builtin.shell: >-
+    /workspace/scripts/compose-wrapper.sh
+    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
+    up -d
+  args:
+    chdir: "{{ stack_project_dir }}"
+  delegate_to: "{{ stack.host }}"
+  when: not dry_run | default(false) | bool
+
+- name: Run post-checks for stack
+  ansible.builtin.include_role:
+    name: postchecks
+  vars:
+    postcheck_target: "{{ stack.healthcheck }}"
+    postcheck_host: "{{ stack.host }}"
+  when: not dry_run | default(false) | bool

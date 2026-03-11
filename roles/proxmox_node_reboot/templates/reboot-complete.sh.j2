@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec >>{{ node_reboot_log_path | quote }} 2>&1
+
+UNIT_NAME={{ node_reboot_completion_unit_name | quote }}
+UNIT_PATH={{ node_reboot_completion_unit_path | quote }}
+SCRIPT_PATH={{ node_reboot_completion_script_path | quote }}
+NODE_NAME={{ inventory_hostname | quote }}
+REBOOT_MODE={{ reboot_mode | default('soft') | quote }}
+BOT_TOKEN={{ node_reboot_notify_bot_token | quote }}
+CHAT_IDS_CSV={{ (node_reboot_notify_chat_ids | join(',')) | quote }}
+LOG_PATH={{ node_reboot_log_path | quote }}
+EXPECTED_GUESTS=({% for vmid in node_reboot_expected_guest_ids | default([]) %}{{ vmid }} {% endfor %})
+
+log() {
+  echo "[$(date --iso-8601=seconds)] $*"
+}
+
+cleanup() {
+  systemctl disable "${UNIT_NAME}" >/dev/null 2>&1 || true
+  rm -f "${UNIT_PATH}" "${SCRIPT_PATH}"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+guest_status() {
+  local vmid="$1"
+  if qm config "${vmid}" >/dev/null 2>&1; then
+    qm status "${vmid}" | awk '{print $2}'
+    return 0
+  fi
+  if pct config "${vmid}" >/dev/null 2>&1; then
+    pct status "${vmid}" | awk '{print $2}'
+    return 0
+  fi
+  echo "missing"
+}
+
+wait_for_guest_running() {
+  local vmid="$1"
+  local deadline=$((SECONDS + 1200))
+  local status=""
+  while (( SECONDS < deadline )); do
+    status="$(guest_status "${vmid}")"
+    if [[ "${status}" == "running" ]]; then
+      echo "running"
+      return 0
+    fi
+    sleep 10
+  done
+  echo "${status:-unknown}"
+  return 1
+}
+
+send_message() {
+  local message="$1"
+  local attempt=1
+  local max_attempts=10
+  while (( attempt <= max_attempts )); do
+    if OPS_TG_BOT_TOKEN="${BOT_TOKEN}" OPS_TG_CHAT_IDS="${CHAT_IDS_CSV}" OPS_TG_MESSAGE="${message}" python3 - <<'PY'
+import os
+import urllib.parse
+import urllib.request
+
+token = os.environ.get("OPS_TG_BOT_TOKEN", "")
+message = os.environ.get("OPS_TG_MESSAGE", "")
+chat_ids = [item.strip() for item in os.environ.get("OPS_TG_CHAT_IDS", "").split(",") if item.strip()]
+if not token or not chat_ids or not message:
+    raise SystemExit(0)
+
+url = f"https://api.telegram.org/bot{token}/sendMessage"
+for chat_id in chat_ids:
+    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
+    request = urllib.request.Request(url, data=payload, method="POST")
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        response.read()
+PY
+    then
+      return 0
+    fi
+    log "telegram send attempt ${attempt}/${max_attempts} failed; retrying"
+    attempt=$((attempt + 1))
+    sleep 15
+  done
+  return 1
+}
+
+trap cleanup EXIT
+
+log "post-reboot notifier started for node=${NODE_NAME} mode=${REBOOT_MODE}"
+sleep 20
+
+overall_status="ok"
+message_lines=(
+  "Ops Proxmox ${REBOOT_MODE} reboot completed"
+  "node=${NODE_NAME}"
+  "result=${overall_status}"
+)
+
+if (( ${#EXPECTED_GUESTS[@]} > 0 )); then
+  message_lines+=("")
+  message_lines+=("guests:")
+  for vmid in "${EXPECTED_GUESTS[@]}"; do
+    status="$(wait_for_guest_running "${vmid}")" || overall_status="warning"
+    if [[ "${status}" != "running" ]]; then
+      overall_status="warning"
+    fi
+    message_lines+=("- ${vmid}: ${status}")
+    log "guest ${vmid} status after reboot: ${status}"
+  done
+fi
+
+message_lines[2]="result=${overall_status}"
+message_lines+=("")
+message_lines+=("log=${LOG_PATH}")
+
+message="$(printf '%s\n' "${message_lines[@]}")"
+log "sending completion message with result=${overall_status}"
+if ! send_message "${message}"; then
+  log "failed to send completion message after retries"
+fi

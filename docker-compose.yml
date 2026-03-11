@@ -1,0 +1,149 @@
+services:
+  ops-db:
+    image: postgres:17-alpine
+    container_name: ops-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ops
+      POSTGRES_USER: ops
+      POSTGRES_PASSWORD: ${OPS_DB_PASSWORD:-ops}
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - ops-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ops -d ops"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ops-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.ops
+    container_name: ops-api
+    restart: unless-stopped
+    working_dir: /workspace
+    depends_on:
+      ops-db:
+        condition: service_healthy
+    command:
+      [
+        "bash",
+        "-lc",
+        "/usr/local/bin/prepare_ssh_dir.sh /ssh-source /root/.ssh && uvicorn api.main:app --host 0.0.0.0 --port 9080"
+      ]
+    environment:
+      OPS_API_HOST: 0.0.0.0
+      OPS_API_PORT: 9080
+      OPS_DB_DSN: postgresql://ops:${OPS_DB_PASSWORD:-ops}@ops-db:5432/ops
+      OPS_DATA_ROOT: /data
+      OPS_SITE_NAME: ${OPS_SITE_NAME:-example}
+      OPS_SITE_ROOT: ${OPS_SITE_ROOT:-/workspace/sites/example}
+      OPS_ADMIN_USERNAME: ${OPS_ADMIN_USERNAME:-opsadmin}
+      OPS_ADMIN_PASSWORD: ${OPS_ADMIN_PASSWORD:-changeme}
+      OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
+      OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
+      OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
+      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
+      OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - .:/workspace
+      - ./data:/data
+      - ${OPS_COMPOSE_ROOT:-/srv/compose}:${OPS_COMPOSE_ROOT:-/srv/compose}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OPS_SSH_DIR:-/root/.ssh}:/ssh-source:ro
+    expose:
+      - "9080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9080/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  ops-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.ops
+    container_name: ops-worker
+    restart: unless-stopped
+    working_dir: /workspace
+    depends_on:
+      ops-db:
+        condition: service_healthy
+    command:
+      [
+        "bash",
+        "-lc",
+        "/usr/local/bin/prepare_ssh_dir.sh /ssh-source /root/.ssh && python3 -m worker.main"
+      ]
+    environment:
+      OPS_DB_DSN: postgresql://ops:${OPS_DB_PASSWORD:-ops}@ops-db:5432/ops
+      OPS_DATA_ROOT: /data
+      OPS_SITE_NAME: ${OPS_SITE_NAME:-example}
+      OPS_SITE_ROOT: ${OPS_SITE_ROOT:-/workspace/sites/example}
+      OPS_ADMIN_USERNAME: ${OPS_ADMIN_USERNAME:-opsadmin}
+      OPS_ADMIN_PASSWORD: ${OPS_ADMIN_PASSWORD:-changeme}
+      OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
+      OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
+      OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
+      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
+      OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - .:/workspace
+      - ./data:/data
+      - ${OPS_COMPOSE_ROOT:-/srv/compose}:${OPS_COMPOSE_ROOT:-/srv/compose}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OPS_SSH_DIR:-/root/.ssh}:/ssh-source:ro
+
+  ops-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: ops-web
+    restart: unless-stopped
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    ports:
+      - "${OPS_HTTP_PORT:-3011}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  ops-notify:
+    build:
+      context: .
+      dockerfile: Dockerfile.ops
+    container_name: ops-notify
+    restart: unless-stopped
+    profiles: ["notify"]
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    command: ["uvicorn", "notify.main:app", "--host", "0.0.0.0", "--port", "9091"]
+    environment:
+      OPS_NOTIFY_PORT: 9091
+      OPS_DB_DSN: postgresql://ops:${OPS_DB_PASSWORD:-ops}@ops-db:5432/ops
+      OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
+      TZ: ${TZ:-America/New_York}
+    expose:
+      - "9091"
+    ports:
+      - "${OPS_NOTIFY_PORT:-9091}:9091"
+
+networks:
+  default:
+    name: ops_network
+
+volumes:
+  ops-db-data:

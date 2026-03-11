@@ -1,0 +1,7 @@
+{
+  "source": "diun",
+  "host": "vm-104",
+  "image": "glanceapp/glance:latest",
+  "status": "new",
+  "timestamp": "2026-03-07T05:00:00Z"
+}

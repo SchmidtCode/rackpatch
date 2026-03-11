@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec >>{{ node_reboot_log_path | quote }} 2>&1
+
+log() {
+  echo "[$(date --iso-8601=seconds)] $*"
+}
+
+wait_for_qemu_stop() {
+  local vmid="$1"
+  local deadline=$((SECONDS + 600))
+  while (( SECONDS < deadline )); do
+    if qm status "$vmid" | grep -q "status: stopped"; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+wait_for_lxc_stop() {
+  local vmid="$1"
+  local deadline=$((SECONDS + 600))
+  while (( SECONDS < deadline )); do
+    if pct status "$vmid" | grep -q "status: stopped"; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+log "soft reboot scheduled by ops-controller"
+log "guest shutdown order: {{ (soft_reboot_guest_order | default([])) | join(' ') }}"
+log "completion notifier unit: {{ node_reboot_completion_unit_name }}"
+{% for vmid in soft_reboot_guest_order | default([]) %}
+if qm config {{ vmid }} >/dev/null 2>&1; then
+  log "shutting down qemu guest {{ vmid }}"
+  qm shutdown {{ vmid }} --timeout 600 || true
+  wait_for_qemu_stop {{ vmid }} || { log "guest {{ vmid }} did not stop cleanly; aborting host reboot"; exit 1; }
+elif pct config {{ vmid }} >/dev/null 2>&1; then
+  log "shutting down lxc guest {{ vmid }}"
+  pct shutdown {{ vmid }} --timeout 600 || true
+  wait_for_lxc_stop {{ vmid }} || { log "guest {{ vmid }} did not stop cleanly; aborting host reboot"; exit 1; }
+else
+  log "guest {{ vmid }} is not present on {{ inventory_hostname }}; skipping"
+fi
+{% endfor %}
+log "all configured guests stopped; rebooting node"
+sleep 5
+systemctl reboot

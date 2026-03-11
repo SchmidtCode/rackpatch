@@ -1,0 +1,21 @@
+---
+- name: Skip migration when guest is pinned
+  ansible.builtin.meta: end_role
+  when: mobility | default('pinned') == 'pinned'
+
+- name: Require a target node for manual migration
+  ansible.builtin.assert:
+    that:
+      - preferred_host | default('') | length > 0
+    fail_msg: Set preferred_host before running manual migration.
+
+- name: Perform manual migration for QEMU guest
+  ansible.builtin.command:
+    argv:
+      - qm
+      - migrate
+      - "{{ proxmox_guest_id | string }}"
+      - "{{ preferred_host }}"
+      - --online
+  delegate_to: "{{ groups['proxmox_nodes'][0] }}"
+  when: guest_type | default('qemu') == 'qemu'

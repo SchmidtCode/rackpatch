@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.retry
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors and OS noise
+.idea/
+.vscode/
+.DS_Store
+
+# Runtime state and artifacts
+data/
+state/*
+!state/.gitkeep
+sites/local/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.envrc
+*.env.local
+*.local.env
+*.secret
+*.secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/

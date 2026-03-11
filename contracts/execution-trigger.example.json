@@ -1,0 +1,6 @@
+{
+  "target": "maintenance",
+  "window": "approved_guest_container",
+  "approved_services": ["n8n", "immich-app"],
+  "rollback_required": true
+}

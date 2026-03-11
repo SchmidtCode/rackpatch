@@ -1,0 +1,27 @@
+FROM semaphoreui/semaphore:latest
+
+USER root
+
+RUN apk add --no-cache \
+        bash \
+        curl \
+        docker-cli \
+        docker-cli-compose \
+        jq \
+        openssh-client \
+        rsync \
+    && "${VIRTUAL_ENV}/bin/pip" install --no-cache-dir \
+        docker \
+        jmespath \
+        netaddr \
+        proxmoxer \
+        requests
+
+COPY requirements.yml /tmp/requirements.yml
+RUN "${VIRTUAL_ENV}/bin/ansible-galaxy" collection install -r /tmp/requirements.yml
+
+WORKDIR /workspace
+COPY scripts/prepare_ssh_dir.sh /usr/local/bin/prepare_ssh_dir.sh
+COPY scripts/semaphore/start-semaphore.sh /usr/local/bin/start-semaphore.sh
+
+CMD ["/usr/local/bin/start-semaphore.sh"]

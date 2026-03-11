@@ -1,0 +1,110 @@
+---
+- name: Compute node reboot stamp
+  ansible.builtin.set_fact:
+    node_reboot_stamp: "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+
+- name: Build Proxmox reboot paths
+  ansible.builtin.set_fact:
+    node_reboot_script_path: "/root/ops-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.sh"
+    node_reboot_log_path: "/var/log/ops-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.log"
+    node_reboot_completion_script_path: "/root/ops-node-reboot-complete-{{ node_reboot_stamp }}.sh"
+    node_reboot_completion_unit_name: "ops-node-reboot-complete-{{ node_reboot_stamp }}.service"
+    node_reboot_completion_unit_path: "/etc/systemd/system/ops-node-reboot-complete-{{ node_reboot_stamp }}.service"
+    node_reboot_expected_guest_ids: "{{ guest_ids | default(soft_reboot_guest_order | default([])) }}"
+    node_reboot_notify_bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') | default('', true) }}"
+    node_reboot_notify_chat_ids: "{{ (lookup('env', 'TELEGRAM_CHAT_IDS') | default('', true)).split(',') | map('trim') | reject('equalto', '') | list }}"
+
+- name: Show reboot completion notifier mode
+  ansible.builtin.debug:
+    msg:
+      node: "{{ inventory_hostname }}"
+      completion_notify_enabled: "{{ (node_reboot_notify_bot_token | length) > 0 and (node_reboot_notify_chat_ids | length) > 0 }}"
+      completion_expected_guests: "{{ node_reboot_expected_guest_ids }}"
+
+- name: Show node reboot plan
+  ansible.builtin.debug:
+    msg:
+      node: "{{ inventory_hostname }}"
+      dry_run: "{{ dry_run | default(false) | bool }}"
+      reboot_mode: "{{ reboot_mode | default('soft') }}"
+      guest_order: "{{ soft_reboot_guest_order | default([]) }}"
+      onboot_expected: true
+
+- name: Report dry-run reboot plan
+  ansible.builtin.debug:
+    msg: "Dry-run only. No reboot scheduled for {{ inventory_hostname }}."
+  when: dry_run | default(false) | bool
+
+- name: Stop role during dry-run
+  ansible.builtin.meta: end_role
+  when: dry_run | default(false) | bool
+
+- name: Write reboot completion notifier script
+  ansible.builtin.template:
+    dest: "{{ node_reboot_completion_script_path }}"
+    src: reboot-complete.sh.j2
+    mode: '0700'
+  no_log: true
+  when:
+    - (node_reboot_notify_bot_token | length) > 0
+    - (node_reboot_notify_chat_ids | length) > 0
+
+- name: Write reboot completion unit
+  ansible.builtin.template:
+    dest: "{{ node_reboot_completion_unit_path }}"
+    src: reboot-complete.service.j2
+    mode: '0644'
+  when:
+    - (node_reboot_notify_bot_token | length) > 0
+    - (node_reboot_notify_chat_ids | length) > 0
+
+- name: Enable reboot completion unit
+  ansible.builtin.systemd_service:
+    name: "{{ node_reboot_completion_unit_name }}"
+    enabled: true
+    daemon_reload: true
+  when:
+    - (node_reboot_notify_bot_token | length) > 0
+    - (node_reboot_notify_chat_ids | length) > 0
+
+- name: Write hard reboot script
+  ansible.builtin.copy:
+    dest: "{{ node_reboot_script_path }}"
+    mode: '0700'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec >>{{ node_reboot_log_path | quote }} 2>&1
+      echo "[$(date --iso-8601=seconds)] hard reboot scheduled by ops-controller"
+      echo "[$(date --iso-8601=seconds)] warning: guests on {{ inventory_hostname }} will be hard-interrupted"
+      echo "[$(date --iso-8601=seconds)] completion notifier unit={{ node_reboot_completion_unit_name }}"
+      sleep 10
+      systemctl reboot
+  when: reboot_mode | default('soft') == 'hard'
+
+- name: Write soft reboot script
+  ansible.builtin.template:
+    dest: "{{ node_reboot_script_path }}"
+    src: soft-reboot.sh.j2
+    mode: '0700'
+  when: reboot_mode | default('soft') == 'soft'
+
+- name: Start detached reboot orchestration
+  ansible.builtin.shell: >-
+    nohup bash {{ node_reboot_script_path | quote }} >/dev/null 2>&1 </dev/null &
+  changed_when: true
+
+- name: Emit reboot plan artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=reboot-plan stack={{ inventory_hostname }} value={{ node_reboot_script_path }}"
+
+- name: Emit reboot log artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=reboot-log stack={{ inventory_hostname }} value={{ node_reboot_log_path }}"
+
+- name: Emit reboot completion unit artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=reboot-complete stack={{ inventory_hostname }} value={{ node_reboot_completion_unit_name }}"
+  when:
+    - (node_reboot_notify_bot_token | length) > 0
+    - (node_reboot_notify_chat_ids | length) > 0

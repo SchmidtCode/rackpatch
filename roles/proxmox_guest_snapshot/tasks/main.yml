@@ -1,0 +1,46 @@
+---
+- name: Build snapshot name
+  ansible.builtin.set_fact:
+    proxmox_snapshot_name: "{{ proxmox.snapshot_prefix }}-{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+
+- name: Skip snapshot during dry-run
+  ansible.builtin.meta: end_role
+  when: dry_run | default(false) | bool
+
+- name: Resolve guest host for snapshot lookup
+  ansible.builtin.set_fact:
+    snapshot_guest_host: "{{ stack.guest_host | default(stack.host | default(inventory_hostname)) }}"
+
+- name: Skip when guest id is not known
+  ansible.builtin.meta: end_role
+  when: hostvars[snapshot_guest_host].proxmox_guest_id is not defined
+
+- name: Take Proxmox snapshot for QEMU guest
+  ansible.builtin.command:
+    argv:
+      - qm
+      - snapshot
+      - "{{ hostvars[snapshot_guest_host].proxmox_guest_id | string }}"
+      - "{{ proxmox_snapshot_name }}"
+      - --description
+      - "{{ snapshot_reason | default('pre-update') }}"
+  delegate_to: "{{ hostvars[snapshot_guest_host].preferred_host | default('proxmox-node-a', true) }}"
+  when:
+    - hostvars[snapshot_guest_host].guest_type | default('qemu') == 'qemu'
+
+- name: Take Proxmox snapshot for LXC guest
+  ansible.builtin.command:
+    argv:
+      - pct
+      - snapshot
+      - "{{ hostvars[snapshot_guest_host].proxmox_guest_id | string }}"
+      - "{{ proxmox_snapshot_name }}"
+      - --description
+      - "{{ snapshot_reason | default('pre-update') }}"
+  delegate_to: "{{ hostvars[snapshot_guest_host].preferred_host | default('proxmox-node-a', true) }}"
+  when:
+    - hostvars[snapshot_guest_host].guest_type | default('qemu') == 'lxc'
+
+- name: Emit snapshot artifact marker
+  ansible.builtin.debug:
+    msg: "OPS_ARTIFACT kind=snapshot stack={{ stack.name | default(snapshot_guest_host) }} value={{ proxmox_snapshot_name }}"

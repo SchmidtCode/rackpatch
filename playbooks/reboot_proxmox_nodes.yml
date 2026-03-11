@@ -1,0 +1,28 @@
+---
+- name: Reboot Proxmox nodes serially
+  hosts: proxmox_nodes
+  gather_facts: true
+  serial: 1
+  vars:
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+    execution_reboot_mode: "{{ reboot_mode | default('soft') }}"
+  pre_tasks:
+    - name: Guard against concurrent node rebooting
+      ansible.builtin.assert:
+        that:
+          - ansible_play_batch | length == 1
+          - execution_reboot_mode in ['soft', 'hard']
+        fail_msg: Proxmox node reboot runs must be serial and use reboot_mode soft or hard.
+
+    - name: Show node reboot mode
+      ansible.builtin.debug:
+        msg:
+          node: "{{ inventory_hostname }}"
+          dry_run: "{{ execution_dry_run }}"
+          reboot_mode: "{{ execution_reboot_mode }}"
+
+  roles:
+    - role: proxmox_node_reboot
+      vars:
+        dry_run: "{{ execution_dry_run }}"
+        reboot_mode: "{{ execution_reboot_mode }}"

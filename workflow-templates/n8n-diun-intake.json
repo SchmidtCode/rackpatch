@@ -1,0 +1,73 @@
+{
+  "name": "Homelab DIUN Intake",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "diun-updates",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-diun-updates",
+      "name": "DIUN Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 280],
+      "webhookId": "homelab-diun-updates"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nreturn [{ json: { source: 'diun', requested_window: 'approved_guest_container', received_at: new Date().toISOString(), payload } }];"
+      },
+      "id": "normalize-diun-event",
+      "name": "Normalize Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 280]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [800, 280]
+    }
+  ],
+  "connections": {
+    "DIUN Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Event": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {},
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

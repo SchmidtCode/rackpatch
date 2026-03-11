@@ -1,0 +1,66 @@
+---
+- name: Orchestrate approved maintenance window
+  hosts: localhost
+  gather_facts: false
+  vars:
+    requested_approved_services: "{{ approved_services | default([]) }}"
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+    maintenance_first_guest: "{{ first_guest | default('apps-vm') }}"
+    maintenance_last_guest: "{{ last_guest | default('infra-vm') }}"
+  tasks:
+    - name: Render approval payload for operator record
+      ansible.builtin.command:
+        argv:
+          - ../scripts/render_approval_payload.py
+          - --window
+          - approved_guest_container
+      args:
+        chdir: "{{ playbook_dir }}"
+      changed_when: false
+
+    - name: Show maintenance mode
+      ansible.builtin.debug:
+        msg:
+          dry_run: "{{ execution_dry_run }}"
+          approved_services: "{{ requested_approved_services }}"
+
+    - name: Patch first guest before container updates
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - playbooks/patch_guests.yml
+          - --limit
+          - "{{ maintenance_first_guest }}"
+          - -e
+          - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
+      args:
+        chdir: "{{ ops_root }}"
+      changed_when: false
+      when: maintenance_first_guest in groups['docker_hosts']
+
+    - name: Apply approved container updates on core VM
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - playbooks/apply_docker_updates.yml
+          - -e
+          - "selected_stacks={{ requested_approved_services | to_json }}"
+          - -e
+          - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
+      args:
+        chdir: "{{ ops_root }}"
+      changed_when: false
+      when: requested_approved_services | length > 0
+
+    - name: Patch final guest after container updates
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - playbooks/patch_guests.yml
+          - --limit
+          - "{{ maintenance_last_guest }}"
+          - -e
+          - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
+      args:
+        chdir: "{{ ops_root }}"
+      changed_when: false

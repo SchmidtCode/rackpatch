@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Custom Ops UI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section id="login-screen" class="panel hero">
+        <div class="eyebrow">Custom Ops UI v0.1</div>
+        <h1>Homelab maintenance without exposing Ansible internals.</h1>
+        <p class="lede">
+          Enroll agents, review stacks and hosts, queue maintenance jobs, approve risky actions,
+          and inspect logs from a single control plane.
+        </p>
+        <form id="login-form" class="login-form">
+          <input id="username" type="text" placeholder="Admin username" value="opsadmin" />
+          <input id="password" type="password" placeholder="Password" />
+          <button type="submit">Enter Control Plane</button>
+        </form>
+        <p id="login-error" class="error"></p>
+      </section>
+
+      <section id="app-screen" class="hidden">
+        <header class="masthead">
+          <div>
+            <div class="eyebrow">Homelab control plane</div>
+            <h1>Custom Ops UI</h1>
+          </div>
+          <div class="masthead-actions">
+            <button id="refresh-all" class="ghost">Refresh</button>
+            <button id="logout" class="ghost">Log out</button>
+          </div>
+        </header>
+
+        <section id="overview" class="card-grid stats"></section>
+
+        <section class="two-up">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Quick Jobs</h2>
+              <p>Queue work against stacks and hosts with opinionated defaults.</p>
+            </div>
+            <form id="job-form" class="stack-form">
+              <select id="job-kind">
+                <option value="docker_discover">Docker discover</option>
+                <option value="docker_update">Docker update</option>
+                <option value="package_check">Package check</option>
+                <option value="package_patch">Package patch</option>
+                <option value="snapshot">Snapshot guest</option>
+                <option value="proxmox_patch">Proxmox patch</option>
+                <option value="proxmox_reboot">Proxmox reboot</option>
+                <option value="backup">Backup</option>
+                <option value="rollback">Rollback stack</option>
+              </select>
+              <select id="target-type">
+                <option value="stack">Stack</option>
+                <option value="host">Host</option>
+              </select>
+              <input id="target-ref" type="text" placeholder="stack or host" />
+              <textarea id="job-payload" rows="6" spellcheck="false">
+{"executor":"auto","dry_run":true}
+              </textarea>
+              <button type="submit">Queue Job</button>
+            </form>
+            <p id="job-result" class="hint"></p>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <h2>Agent Enrollment</h2>
+              <p>Use the bootstrap token from settings with the one-line installer.</p>
+            </div>
+            <pre id="install-commands" class="code-card"></pre>
+          </div>
+        </section>
+
+        <section class="two-up">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Agents</h2>
+            </div>
+            <div id="agents" class="list"></div>
+          </div>
+          <div class="panel">
+            <div class="section-head">
+              <h2>Hosts</h2>
+            </div>
+            <div id="hosts" class="list"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Stacks</h2>
+            <p>Compact table view for fast scanning and one-click actions.</p>
+          </div>
+          <div id="stacks" class="table-shell"></div>
+        </section>
+
+        <section class="two-up">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Pending Approvals</h2>
+            </div>
+            <div id="approvals" class="list"></div>
+          </div>
+          <div class="panel">
+            <div class="section-head">
+              <h2>Schedules</h2>
+            </div>
+            <div id="schedules" class="list"></div>
+          </div>
+        </section>
+
+        <section class="two-up">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Recent Jobs</h2>
+            </div>
+            <div id="jobs" class="list"></div>
+          </div>
+          <div class="panel">
+            <div class="section-head">
+              <h2>Backups & Artifacts</h2>
+            </div>
+            <div id="backups" class="list"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Live Log</h2>
+            <p>Select a job to inspect its event stream.</p>
+          </div>
+          <pre id="job-events" class="log-card">No job selected.</pre>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+  </html>

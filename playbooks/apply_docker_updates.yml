@@ -1,0 +1,54 @@
+---
+- name: Apply Docker stack updates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    requested_target_window: "{{ target_window | default('approve') }}"
+    requested_selected_stacks: "{{ selected_stacks | default([]) }}"
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+    backup_stamp: "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+  pre_tasks:
+    - name: Load stack catalog
+      ansible.builtin.include_vars:
+        file: "{{ ops_stacks_file | default('../config/stacks.yml') }}"
+        name: stack_catalog
+
+    - name: Select stacks for this run
+      ansible.builtin.set_fact:
+        stacks_to_update: >-
+          {{
+            stack_catalog.stacks
+            | selectattr('update_mode', 'equalto', requested_target_window)
+            | list
+            if (requested_selected_stacks | length) == 0
+            else
+            stack_catalog.stacks
+            | selectattr('name', 'in', requested_selected_stacks)
+            | list
+          }}
+
+    - name: Sort stacks by shutdown priority
+      ansible.builtin.set_fact:
+        stacks_to_update: "{{ stacks_to_update | sort(attribute='stop_order') }}"
+
+    - name: Assert stacks were selected
+      ansible.builtin.assert:
+        that:
+          - stacks_to_update | length > 0
+        fail_msg: No stacks matched the requested window or selected stack list.
+
+  tasks:
+    - name: Show dry-run selection
+      ansible.builtin.debug:
+        msg:
+          dry_run: "{{ execution_dry_run }}"
+          stacks: "{{ stacks_to_update | map(attribute='name') | list }}"
+
+    - name: Apply update role per stack
+      ansible.builtin.include_role:
+        name: docker_stack_update
+      vars:
+        dry_run: "{{ execution_dry_run }}"
+      loop: "{{ stacks_to_update }}"
+      loop_control:
+        loop_var: stack

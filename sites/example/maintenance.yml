@@ -1,0 +1,14 @@
+windows:
+  discovery:
+    cron: "0 5 * * *"
+  docker_auto:
+    cron: "30 5 * * *"
+  approved_guest_container:
+    cron: "0 4 * * 6"
+  proxmox_nodes:
+    cron: "30 4 * * 0"
+
+batches:
+  - name: apps
+    targets:
+      - apps-vm

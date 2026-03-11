@@ -1,0 +1,20 @@
+---
+- name: Snapshot guests on demand
+  hosts: guests
+  gather_facts: false
+  vars:
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+  tasks:
+    - name: Show snapshot mode
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          dry_run: "{{ execution_dry_run }}"
+
+    - name: Run guest snapshot role
+      ansible.builtin.include_role:
+        name: proxmox_guest_snapshot
+      vars:
+        snapshot_reason: manual-snapshot
+        dry_run: "{{ execution_dry_run }}"
+

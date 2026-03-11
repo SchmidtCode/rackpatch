@@ -1,0 +1,40 @@
+---
+- name: Patch guests in maintenance order
+  hosts: guests
+  gather_facts: true
+  serial: 1
+  vars:
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+    allow_dns_critical_anytime: "{{ force_dns_critical | default(false) | bool }}"
+    allow_manual_guest_targets: "{{ allow_manual_guests | default(false) | bool }}"
+  pre_tasks:
+    - name: Skip manual-policy guests unless explicitly enabled
+      ansible.builtin.meta: end_host
+      when:
+        - guest_patch_policy | default('managed') == 'manual'
+        - not allow_manual_guest_targets
+
+    - name: Assert early-morning window for DNS-critical guest
+      ansible.builtin.assert:
+        that:
+          - execution_dry_run or allow_dns_critical_anytime or not (dns_critical | default(false)) or (lookup('pipe', 'TZ=' ~ maintenance_timezone ~ ' date +%H') | int < 7)
+        fail_msg: DNS-critical guest maintenance is restricted to early-morning hours.
+      delegate_to: localhost
+
+    - name: Snapshot guest before OS maintenance when required
+      ansible.builtin.include_role:
+        name: proxmox_guest_snapshot
+      vars:
+        snapshot_reason: guest-os-patch
+      when: snapshot_class | default('none') != 'none'
+
+    - name: Show guest patch mode
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          dry_run: "{{ execution_dry_run }}"
+
+  roles:
+    - role: os_patch
+      vars:
+        dry_run: "{{ execution_dry_run }}"

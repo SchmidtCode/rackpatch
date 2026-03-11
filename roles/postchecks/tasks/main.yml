@@ -1,0 +1,28 @@
+---
+- name: Check service URL
+  ansible.builtin.uri:
+    url: "{{ postcheck_target.target }}"
+    validate_certs: "{{ not (postcheck_target.allow_insecure | default(false)) }}"
+    status_code: [200, 302, 401, 403]
+    timeout: "{{ healthcheck_timeout }}"
+  register: url_postcheck
+  retries: "{{ healthcheck_retries }}"
+  delay: "{{ healthcheck_delay }}"
+  until: url_postcheck.status in [200, 302, 401, 403]
+  when: postcheck_target.type == 'url'
+  delegate_to: localhost
+
+- name: Check container is running
+  community.docker.docker_container_info:
+    name: "{{ postcheck_target.target }}"
+  register: container_info
+  when: postcheck_target.type == 'container'
+  delegate_to: "{{ postcheck_host }}"
+
+- name: Assert running container status
+  ansible.builtin.assert:
+    that:
+      - container_info.exists
+      - container_info.container.State.Running
+    fail_msg: "Container {{ postcheck_target.target }} is not running on {{ postcheck_host }}"
+  when: postcheck_target.type == 'container'

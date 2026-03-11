@@ -1,0 +1,26 @@
+---
+- name: Patch Proxmox nodes serially
+  hosts: proxmox_nodes
+  gather_facts: true
+  serial: 1
+  vars:
+    execution_dry_run: "{{ dry_run | default(false) | bool }}"
+  pre_tasks:
+    - name: Guard against concurrent node patching
+      ansible.builtin.assert:
+        that:
+          - ansible_play_batch | length == 1
+        fail_msg: Proxmox nodes must be patched one at a time.
+
+    - name: Show mobility policy for attached guests
+      ansible.builtin.debug:
+        msg:
+          node: "{{ inventory_hostname }}"
+          mobility_policy: manual-or-pinned
+          dry_run: "{{ execution_dry_run }}"
+
+  roles:
+    - role: os_patch
+      vars:
+        dry_run: "{{ execution_dry_run }}"
+        auto_reboot: false

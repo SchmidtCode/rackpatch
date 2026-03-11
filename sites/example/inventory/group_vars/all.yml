@@ -1,0 +1,22 @@
+compose_root: /srv/compose
+ops_root: /workspace
+state_root: /data
+backup_root: /data/backups
+rollback_root: /data/rollbacks
+healthcheck_timeout: 20
+healthcheck_retries: 20
+healthcheck_delay: 3
+maintenance_timezone: America/New_York
+
+default_windows:
+  discovery: "0 5 * * *"
+  docker_auto: "30 5 * * *"
+  approved_guest_container: "0 4 * * 6"
+  proxmox_nodes: "30 4 * * 0"
+
+proxmox:
+  api_user: "{{ lookup('env', 'PROXMOX_API_USER') | default('root@pam', true) }}"
+  api_token_id: "{{ lookup('env', 'PROXMOX_API_TOKEN_ID') | default('', true) }}"
+  api_token_secret: "{{ lookup('env', 'PROXMOX_API_TOKEN_SECRET') | default('', true) }}"
+  snapshot_prefix: ops-preupdate
+

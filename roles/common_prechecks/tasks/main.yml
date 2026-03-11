@@ -1,0 +1,33 @@
+---
+- name: Resolve stack project directory
+  ansible.builtin.set_fact:
+    stack_project_dir: "{{ stack.path | default(stack.project_dir) }}"
+
+- name: Validate stack path exists
+  ansible.builtin.stat:
+    path: "{{ stack_project_dir }}"
+  register: stack_path
+  delegate_to: "{{ stack.host }}"
+
+- name: Assert stack path is present
+  ansible.builtin.assert:
+    that:
+      - stack_path.stat.exists
+      - stack_path.stat.isdir
+    fail_msg: "Stack path {{ stack_project_dir }} is missing on {{ stack.host }}"
+
+- name: Validate compose env files exist when configured
+  ansible.builtin.stat:
+    path: "{{ stack_project_dir }}/{{ item }}"
+  register: stack_env_file
+  delegate_to: "{{ stack.host }}"
+  when: stack.compose_env_files is defined
+  loop: "{{ stack.compose_env_files | default([]) }}"
+
+- name: Assert compose env files are present
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: "Expected {{ item.stat.path }} to exist"
+  when: stack.compose_env_files is defined
+  loop: "{{ stack_env_file.results | default([]) }}"

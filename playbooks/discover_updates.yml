@@ -1,0 +1,44 @@
+---
+- name: Discover Docker and OS updates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    approval_window: discovery
+  tasks:
+    - name: Load stack catalog
+      ansible.builtin.include_vars:
+        file: "{{ ops_stacks_file | default('../config/stacks.yml') }}"
+        name: stack_catalog
+
+    - name: Render approval payload skeleton
+      ansible.builtin.command:
+        argv:
+          - ../scripts/render_approval_payload.py
+          - --stacks
+          - "{{ ops_stacks_file | default('../config/stacks.yml') }}"
+          - --window
+          - "{{ approval_window }}"
+      args:
+        chdir: "{{ playbook_dir }}"
+      changed_when: false
+      register: approval_payload
+
+    - name: Show approval payload
+      ansible.builtin.debug:
+        var: approval_payload.stdout
+
+- name: Collect package update status from guests and nodes
+  hosts: proxmox_nodes:guests
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: List upgradable packages
+      ansible.builtin.shell: apt list --upgradable 2>/dev/null | tail -n +2
+      changed_when: false
+      register: upgradable_packages
+
+    - name: Print package summary
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          packages: "{{ upgradable_packages.stdout_lines }}"
