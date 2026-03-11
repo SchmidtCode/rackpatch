@@ -28,7 +28,7 @@ AUTH_SECRET = env("OPS_AUTH_SECRET", "change-me-in-production")
 DEFAULT_AGENT_BOOTSTRAP_TOKEN = env("OPS_AGENT_BOOTSTRAP_TOKEN", "bootstrap-me")
 PUBLIC_BASE_URL = env("OPS_PUBLIC_BASE_URL", "http://YOUR-OPS-HOST:3011").rstrip("/")
 PUBLIC_REPO_URL = env("OPS_PUBLIC_REPO_URL", "https://github.com/YOUR-ORG/custom-ops-ui.git").rstrip("/")
-PUBLIC_REPO_REF = env("OPS_PUBLIC_REPO_REF", "main")
+PUBLIC_REPO_REF = env("OPS_PUBLIC_REPO_REF", "v0.1.0")
 PUBLIC_INSTALL_SCRIPT_URL = env("OPS_PUBLIC_INSTALL_SCRIPT_URL", "").rstrip("/")
 
 WORKER_POLL_SECONDS = float(env("OPS_WORKER_POLL_SECONDS", "5"))

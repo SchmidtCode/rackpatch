@@ -45,7 +45,7 @@ services:
       OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
       OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
       OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
-      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-v0.1.0}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
       TZ: ${TZ:-America/New_York}
@@ -90,7 +90,7 @@ services:
       OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
       OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
       OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
-      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-v0.1.0}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
       TZ: ${TZ:-America/New_York}
