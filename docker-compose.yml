@@ -44,9 +44,11 @@ services:
       OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
       OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
       OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
-      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
-      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-v0.1.0}
+      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
       TZ: ${TZ:-America/New_York}
     volumes:
@@ -89,9 +91,11 @@ services:
       OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
       OPS_AGENT_BOOTSTRAP_TOKEN: ${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
       OPS_PUBLIC_BASE_URL: ${OPS_PUBLIC_BASE_URL:-http://YOUR-OPS-HOST:3011}
-      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/YOUR-ORG/custom-ops-ui.git}
-      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-v0.1.0}
+      OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
+      OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
       TZ: ${TZ:-America/New_York}
     volumes:
@@ -117,6 +121,32 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+
+  ops-telegram:
+    build:
+      context: .
+      dockerfile: Dockerfile.ops
+    container_name: ops-telegram
+    restart: unless-stopped
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    command: ["python3", "-m", "telegrambot.main"]
+    environment:
+      OPS_API_BASE: http://ops-api:9080
+      OPS_DB_DSN: postgresql://ops:${OPS_DB_PASSWORD:-ops}@ops-db:5432/ops
+      OPS_DATA_ROOT: /data
+      OPS_SITE_NAME: ${OPS_SITE_NAME:-example}
+      OPS_SITE_ROOT: ${OPS_SITE_ROOT:-/workspace/sites/example}
+      OPS_ADMIN_USERNAME: ${OPS_ADMIN_USERNAME:-opsadmin}
+      OPS_ADMIN_PASSWORD: ${OPS_ADMIN_PASSWORD:-changeme}
+      OPS_AUTH_SECRET: ${OPS_AUTH_SECRET:-change-me}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - .:/workspace
+      - ./data:/data
 
   ops-notify:
     build:

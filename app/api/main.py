@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from common import auth, config, db, jobs, site
+from common import auth, config, db, jobs, runtime_settings, site
 
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
@@ -259,29 +259,54 @@ def toggle_schedule(schedule_id: str, payload: dict[str, Any], username: str = D
 def settings(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     bootstrap_token = auth.ensure_bootstrap_token()
-    install_script_url = config.public_install_script_url()
-    public_repo_url = config.PUBLIC_REPO_URL
-    public_base_url = config.PUBLIC_BASE_URL
+    public_settings = runtime_settings.get_public_settings()
+    telegram_settings = runtime_settings.get_telegram_settings()
     return {
+        "ui": {
+            "app_name": config.APP_NAME,
+            "app_version": config.APP_VERSION,
+        },
         "site_name": config.SITE_NAME,
         "site_root": str(site.site_root()),
         "inventory_path": str(site.inventory_path()),
         "stacks_path": str(site.stacks_path()),
         "maintenance_path": str(site.maintenance_path()),
+        "paths": {
+            "site_root": str(site.site_root()),
+            "inventory": str(site.inventory_path()),
+            "stacks": str(site.stacks_path()),
+            "maintenance": str(site.maintenance_path()),
+        },
+        "public": public_settings,
+        "telegram": telegram_settings,
         "default_agent_bootstrap_token": bootstrap_token,
         "agent_install": {
             "container": (
-                f"curl -fsSL {install_script_url} | sh -s -- "
-                f"--server-url {public_base_url} --bootstrap-token {bootstrap_token} "
-                f"--mode container --install-source {public_repo_url}"
+                f"curl -fsSL {public_settings['install_script_url']} | sh -s -- "
+                f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
+                f"--mode container --install-source {public_settings['repo_url']}"
             ),
             "systemd": (
-                f"curl -fsSL {install_script_url} | sh -s -- "
-                f"--server-url {public_base_url} --bootstrap-token {bootstrap_token} "
-                f"--mode systemd --install-source {public_repo_url}"
+                f"curl -fsSL {public_settings['install_script_url']} | sh -s -- "
+                f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
+                f"--mode systemd --install-source {public_settings['repo_url']}"
             ),
         },
     }
+
+
+@app.post("/api/v1/settings/public")
+def update_public_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    runtime_settings.set_public_settings(payload)
+    return settings("_internal")
+
+
+@app.post("/api/v1/settings/telegram")
+def update_telegram_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    runtime_settings.set_telegram_settings(payload)
+    return settings("_internal")
 
 
 @app.post("/api/v1/settings/agent-tokens")

@@ -1,17 +1,18 @@
-# Custom Ops UI
+# rackpatch
 
-Custom Ops UI is a compose-first homelab maintenance appliance for Docker stacks, Debian/Ubuntu guests, and Proxmox workflows.
+rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
 
 Version in this repo: `v0.1.0`
 
 The main runtime is:
 
-- `ops-web`: custom web UI
+- `ops-web`: rackpatch web UI
 - `ops-api`: backend API
 - `ops-worker`: database-backed job runner
 - `ops-db`: Postgres
-- `ops-notify`: optional Telegram/webhook adapter
-- `ops-agent`: remote polling agent for Debian/Ubuntu and Docker hosts
+- `ops-telegram`: Telegram bot for remote job control
+- `ops-notify`: optional send-only Telegram/webhook notifier
+- `ops-agent`: remote polling agent for Debian, Ubuntu, and Docker hosts
 
 ## Quick Start
 
@@ -30,7 +31,7 @@ Default bootstrap login:
 - username: `opsadmin`
 - password: value of `OPS_ADMIN_PASSWORD`
 
-If `OPS_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, the app generates a stable bootstrap token on first start and shows it in `Settings`.
+If `OPS_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootstrap token on first start and shows it in `Settings`.
 
 ## Refresh After Changes
 
@@ -48,14 +49,52 @@ Targeted refreshes:
 # Frontend only
 docker compose up -d --build ops-web
 
-# API / worker code
-docker compose up -d --build ops-api ops-worker
+# API / worker / Telegram bot
+docker compose up -d --build ops-api ops-worker ops-telegram
 
 # Logs
-docker compose logs -f ops-api ops-worker ops-web
+docker compose logs -f ops-api ops-worker ops-web ops-telegram
 ```
 
 If you changed `.env`, rerun `docker compose up -d --build` so containers are recreated with the new environment. If you changed the web UI, do a hard refresh in the browser after redeploying.
+
+## UI Layout
+
+rackpatch now uses page-style navigation instead of one long dashboard:
+
+- `Overview`: health, recent jobs, pending approvals, install commands
+- `Stacks`: compact table with discover, dry-run, live update, rollback
+- `Hosts`: inventory, agent state, package and Proxmox actions
+- `Agents`: registered pollers and capabilities
+- `Jobs`: manual job form plus live job logs
+- `Approvals`: pending gated work
+- `Schedules`: disabled-by-default automation controls
+- `Backups`: artifacts and rollback records
+- `Settings`: public repo config, Telegram config, install commands, site paths
+
+## Telegram Control
+
+`ops-telegram` uses the same backend jobs and approvals as the UI. Configure the bot token and allowed chat IDs in `Settings`, then use commands like:
+
+```text
+/status
+/stacks
+/hosts
+/jobs
+/approvals
+/approve <job-id>
+/discover <stack|all>
+/update <stack|all> [dry|live]
+/patch <host|all> [dry|live]
+/snapshot <host>
+/proxmox-patch <limit> [dry|live]
+/proxmox-reboot <limit> [dry|live]
+/backup <volume>
+/rollback <stack>
+/schedules
+/schedule <name-or-id> on|off
+/job <kind> <target_type> <target_ref> {"executor":"auto"}
+```
 
 ## Site Overlays
 
@@ -89,48 +128,52 @@ Keep `sites/local` private. It is ignored by git.
 
 ## GitHub Publishing
 
-1. Create a new GitHub repository.
-2. Use the prepared public branch:
+The repo URL for this project is:
 
-```bash
-git switch public/v0.1.0
-```
-3. Set these values in your local `.env` before rebuilding:
+- `https://github.com/SchmidtCode/rackpatch`
+
+Use these values in your local `.env`:
 
 ```dotenv
 OPS_PUBLIC_BASE_URL=http://YOUR-OPS-HOST:3011
-OPS_PUBLIC_REPO_URL=https://github.com/YOUR-ORG/YOUR-REPO.git
-OPS_PUBLIC_REPO_REF=v0.1.0
+OPS_PUBLIC_REPO_URL=https://github.com/SchmidtCode/rackpatch.git
+OPS_PUBLIC_REPO_REF=main
 OPS_PUBLIC_INSTALL_SCRIPT_URL=
 ```
 
-`OPS_PUBLIC_INSTALL_SCRIPT_URL` is optional. If left blank and `OPS_PUBLIC_REPO_URL` is a GitHub repo URL, the UI derives the installer URL automatically as:
+`OPS_PUBLIC_INSTALL_SCRIPT_URL` is optional. If left blank and `OPS_PUBLIC_REPO_URL` is a GitHub repo URL, rackpatch derives:
 
 ```text
 https://raw.githubusercontent.com/<owner>/<repo>/<ref>/scripts/install-agent.sh
 ```
 
-4. Rebuild the API and web services so the enrollment command in the UI uses your GitHub repo:
+Rebuild the API and web services so the enrollment commands use the latest public repo settings:
 
 ```bash
-docker compose up -d --build ops-api ops-web
+docker compose up -d --build ops-api ops-web ops-telegram
 ```
 
-5. Add your GitHub remote and push:
+If `origin` already exists, do not add it again. Check it with:
 
 ```bash
-git remote add origin git@github.com:YOUR-ORG/YOUR-REPO.git
-git push -u origin public/v0.1.0:main
+git remote -v
+```
+
+Your earlier push failed because GitHub already had a `main` branch commit. Since you want the public rackpatch branch to replace it, use:
+
+```bash
+git switch public/v0.1.0
+git push -u origin public/v0.1.0:main --force-with-lease
+git push origin public/v0.1.0
 git push origin v0.1.0
 ```
 
-6. In GitHub:
+After that, in GitHub:
 
 - set the default branch to `main`
-- add a repo description
-- add a `v0.1.0` release from the tag
-- enable Issues if you want community bug reports
-- optionally add Discussions for homelab setup questions
+- create a release from `v0.1.0`
+- add a repo description and topics
+- enable Issues and optionally Discussions
 
 ## Agent Enrollment
 
@@ -144,25 +187,26 @@ The UI `Settings` page shows the exact one-line install commands based on:
 Manual example:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR-ORG/YOUR-REPO/v0.1.0/scripts/install-agent.sh | sh -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | sh -s -- \
   --server-url http://YOUR-OPS-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
-  --install-source https://github.com/YOUR-ORG/YOUR-REPO.git
+  --install-source https://github.com/SchmidtCode/rackpatch.git
 ```
 
 Current agent packaging options:
 
-- container mode: builds and runs the local `Dockerfile.agent`
-- systemd mode: installs a small Python venv and runs `agent.main`
+- container mode: installs under `/opt/rackpatch-agent` and starts a compose-managed `rackpatch-agent`
+- systemd mode: installs under `/opt/rackpatch-agent` and starts `rackpatch-agent.service`
 
 ## Layout
 
 - `app/api/main.py`: FastAPI backend
 - `app/worker/main.py`: job runner and schedule loop
 - `app/agent/main.py`: polling agent
+- `app/telegrambot/main.py`: Telegram control bot
 - `app/notify/main.py`: optional notifier
-- `web/index.html`: custom UI shell
+- `web/index.html`: rackpatch UI shell
 - `sites/example`: public example site
 
 ## Common Commands
@@ -178,6 +222,7 @@ make backup-legacy
 
 ## Notes
 
-- Schedules are seeded from the site overlay and remain disabled by default until explicitly enabled in the UI.
+- Schedules are seeded from the site overlay and remain disabled by default until explicitly enabled in the UI or Telegram.
 - Job backups and rollback artifacts are written under `data/backups`.
-- `ops-notify` is optional and only sends Telegram messages if `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_IDS` are set.
+- `ops-telegram` idles until a bot token is configured.
+- `ops-notify` is optional and only sends Telegram messages if a bot token and chat IDs are configured.

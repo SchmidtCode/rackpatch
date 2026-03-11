@@ -5,16 +5,21 @@ import sys
 import requests
 from fastapi import FastAPI
 
-from common import config
+from common import config, db, runtime_settings
 
 
-app = FastAPI(title="ops-notify", version=config.APP_VERSION)
+app = FastAPI(title="rackpatch-notify", version=config.APP_VERSION)
 SESSION = requests.Session()
 
 
-def telegram_api(method: str, payload: dict) -> dict:
+@app.on_event("startup")
+def on_startup() -> None:
+    db.init_db()
+
+
+def telegram_api(bot_token: str, method: str, payload: dict) -> dict:
     response = SESSION.post(
-        f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}",
+        f"https://api.telegram.org/bot{bot_token}/{method}",
         json=payload,
         timeout=30,
     )
@@ -32,10 +37,10 @@ def notify(payload: dict) -> dict:
     message = str(payload.get("message", "")).strip()
     if not message:
         return {"status": "ignored"}
-    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_IDS:
-        for chat_id in config.TELEGRAM_CHAT_IDS:
-            telegram_api("sendMessage", {"chat_id": chat_id, "text": message})
+    telegram_settings = runtime_settings.get_telegram_settings(include_secret=True)
+    if telegram_settings["bot_token"] and telegram_settings["chat_ids"]:
+        for chat_id in telegram_settings["chat_ids"]:
+            telegram_api(telegram_settings["bot_token"], "sendMessage", {"chat_id": chat_id, "text": message})
     else:
         print(message, file=sys.stdout, flush=True)
     return {"status": "ok"}
-

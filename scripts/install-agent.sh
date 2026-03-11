@@ -80,18 +80,18 @@ resolve_source() {
 src_root="$(resolve_source)"
 
 if [[ "${mode}" == "container" ]]; then
-  install_dir="/opt/ops-agent"
+  install_dir="/opt/rackpatch-agent"
   mkdir -p "${install_dir}"
   rm -rf "${install_dir}/src"
   mkdir -p "${install_dir}/src"
   cp -R "${src_root}/app" "${install_dir}/src/app"
   cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
   cp "${src_root}/requirements-ops.txt" "${install_dir}/src/requirements-ops.txt"
-  docker build -t custom-ops-agent:local -f "${install_dir}/src/Dockerfile.agent" "${install_dir}/src"
+  docker build -t rackpatch-agent:local -f "${install_dir}/src/Dockerfile.agent" "${install_dir}/src"
   cat > "${install_dir}/compose.yml" <<EOF
 services:
-  ops-agent:
-    image: custom-ops-agent:local
+  rackpatch-agent:
+    image: rackpatch-agent:local
     restart: unless-stopped
     environment:
       OPS_SERVER_URL: ${server_url}
@@ -100,7 +100,7 @@ services:
       OPS_AGENT_LABELS: ${labels}
       OPS_AGENT_MODE: container
     volumes:
-      - /var/lib/ops-agent:/var/lib/ops-agent
+      - /var/lib/rackpatch-agent:/var/lib/ops-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
   docker compose -f "${install_dir}/compose.yml" up -d
@@ -108,7 +108,7 @@ EOF
   exit 0
 fi
 
-install_dir="/opt/ops-agent"
+install_dir="/opt/rackpatch-agent"
 mkdir -p "${install_dir}"
 rm -rf "${install_dir}/app"
 cp -R "${src_root}/app" "${install_dir}/app"
@@ -122,19 +122,19 @@ OPS_AGENT_BOOTSTRAP_TOKEN=${bootstrap_token}
 OPS_AGENT_NAME=${name}
 OPS_AGENT_LABELS=${labels}
 OPS_AGENT_MODE=systemd
-OPS_AGENT_STATE_DIR=/var/lib/ops-agent
+OPS_AGENT_STATE_DIR=/var/lib/rackpatch-agent
 PYTHONPATH=${install_dir}/app
 EOF
 
-cat > /etc/systemd/system/ops-agent.service <<'EOF'
+cat > /etc/systemd/system/rackpatch-agent.service <<'EOF'
 [Unit]
-Description=Custom Ops Agent
+Description=rackpatch agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=/opt/ops-agent/env
-ExecStart=/opt/ops-agent/venv/bin/python -m agent.main
+EnvironmentFile=/opt/rackpatch-agent/env
+ExecStart=/opt/rackpatch-agent/venv/bin/python -m agent.main
 Restart=always
 RestartSec=5
 
@@ -143,5 +143,5 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ops-agent.service
+systemctl enable --now rackpatch-agent.service
 echo "systemd agent installed"

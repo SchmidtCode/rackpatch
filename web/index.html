@@ -3,141 +3,277 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Custom Ops UI</title>
+    <title>rackpatch</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="backdrop"></div>
     <main class="shell">
       <section id="login-screen" class="panel hero">
-        <div class="eyebrow">Custom Ops UI v0.1</div>
-        <h1>Homelab maintenance without exposing Ansible internals.</h1>
+        <div class="eyebrow">rackpatch v0.1</div>
+        <h1>Homelab patching and stack maintenance from one control plane.</h1>
         <p class="lede">
-          Enroll agents, review stacks and hosts, queue maintenance jobs, approve risky actions,
-          and inspect logs from a single control plane.
+          Enroll agents, inspect hosts and stacks, queue jobs, handle approvals, and drive the
+          same workflows from the UI or Telegram.
         </p>
         <form id="login-form" class="login-form">
           <input id="username" type="text" placeholder="Admin username" value="opsadmin" />
           <input id="password" type="password" placeholder="Password" />
-          <button type="submit">Enter Control Plane</button>
+          <button type="submit">Enter rackpatch</button>
         </form>
         <p id="login-error" class="error"></p>
       </section>
 
       <section id="app-screen" class="hidden">
-        <header class="masthead">
-          <div>
-            <div class="eyebrow">Homelab control plane</div>
-            <h1>Custom Ops UI</h1>
-          </div>
-          <div class="masthead-actions">
-            <button id="refresh-all" class="ghost">Refresh</button>
-            <button id="logout" class="ghost">Log out</button>
-          </div>
-        </header>
-
-        <section id="overview" class="card-grid stats"></section>
-
-        <section class="two-up">
-          <div class="panel">
-            <div class="section-head">
-              <h2>Quick Jobs</h2>
-              <p>Queue work against stacks and hosts with opinionated defaults.</p>
+        <div class="app-layout">
+          <aside class="panel sidebar">
+            <div class="brand-block">
+              <div class="eyebrow">rackpatch v0.1</div>
+              <h1 class="brand-title">rackpatch</h1>
+              <p class="sidebar-copy">
+                Opinionated maintenance for homelabs running Docker, Debian, Ubuntu, and Proxmox.
+              </p>
             </div>
-            <form id="job-form" class="stack-form">
-              <select id="job-kind">
-                <option value="docker_discover">Docker discover</option>
-                <option value="docker_update">Docker update</option>
-                <option value="package_check">Package check</option>
-                <option value="package_patch">Package patch</option>
-                <option value="snapshot">Snapshot guest</option>
-                <option value="proxmox_patch">Proxmox patch</option>
-                <option value="proxmox_reboot">Proxmox reboot</option>
-                <option value="backup">Backup</option>
-                <option value="rollback">Rollback stack</option>
-              </select>
-              <select id="target-type">
-                <option value="stack">Stack</option>
-                <option value="host">Host</option>
-              </select>
-              <input id="target-ref" type="text" placeholder="stack or host" />
-              <textarea id="job-payload" rows="6" spellcheck="false">
-{"executor":"auto","dry_run":true}
-              </textarea>
-              <button type="submit">Queue Job</button>
-            </form>
-            <p id="job-result" class="hint"></p>
-          </div>
 
-          <div class="panel">
-            <div class="section-head">
-              <h2>Agent Enrollment</h2>
-              <p>Use the bootstrap token from settings with the one-line installer.</p>
-            </div>
-            <pre id="install-commands" class="code-card"></pre>
-          </div>
-        </section>
+            <nav class="page-nav">
+              <button class="nav-link active" data-page-link="overview">Overview</button>
+              <button class="nav-link" data-page-link="stacks">Stacks</button>
+              <button class="nav-link" data-page-link="hosts">Hosts</button>
+              <button class="nav-link" data-page-link="agents">Agents</button>
+              <button class="nav-link" data-page-link="jobs">Jobs</button>
+              <button class="nav-link" data-page-link="approvals">Approvals</button>
+              <button class="nav-link" data-page-link="schedules">Schedules</button>
+              <button class="nav-link" data-page-link="backups">Backups</button>
+              <button class="nav-link" data-page-link="settings">Settings</button>
+            </nav>
 
-        <section class="two-up">
-          <div class="panel">
-            <div class="section-head">
-              <h2>Agents</h2>
+            <div class="sidebar-footer">
+              <div class="sidebar-label">Site</div>
+              <div id="site-chip" class="sidebar-chip">loading</div>
             </div>
-            <div id="agents" class="list"></div>
-          </div>
-          <div class="panel">
-            <div class="section-head">
-              <h2>Hosts</h2>
-            </div>
-            <div id="hosts" class="list"></div>
-          </div>
-        </section>
+          </aside>
 
-        <section class="panel">
-          <div class="section-head">
-            <h2>Stacks</h2>
-            <p>Compact table view for fast scanning and one-click actions.</p>
-          </div>
-          <div id="stacks" class="table-shell"></div>
-        </section>
+          <section class="content-shell">
+            <header class="panel topbar">
+              <div>
+                <div id="page-kicker" class="eyebrow">Control Plane</div>
+                <h2 id="page-title">Overview</h2>
+              </div>
+              <div class="topbar-actions">
+                <button id="refresh-all" class="ghost">Refresh</button>
+                <button id="logout" class="ghost">Log out</button>
+              </div>
+            </header>
 
-        <section class="two-up">
-          <div class="panel">
-            <div class="section-head">
-              <h2>Pending Approvals</h2>
-            </div>
-            <div id="approvals" class="list"></div>
-          </div>
-          <div class="panel">
-            <div class="section-head">
-              <h2>Schedules</h2>
-            </div>
-            <div id="schedules" class="list"></div>
-          </div>
-        </section>
+            <p id="flash" class="flash hidden"></p>
 
-        <section class="two-up">
-          <div class="panel">
-            <div class="section-head">
-              <h2>Recent Jobs</h2>
-            </div>
-            <div id="jobs" class="list"></div>
-          </div>
-          <div class="panel">
-            <div class="section-head">
-              <h2>Backups & Artifacts</h2>
-            </div>
-            <div id="backups" class="list"></div>
-          </div>
-        </section>
+            <section class="page active" data-page="overview">
+              <div id="overview-stats" class="card-grid stats"></div>
+              <div class="split-layout">
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Recent Jobs</h3>
+                    <p>Latest execution activity across workers and agents.</p>
+                  </div>
+                  <div id="overview-jobs"></div>
+                </section>
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Pending Approvals</h3>
+                    <p>Queue changes safely before the live window.</p>
+                  </div>
+                  <div id="overview-approvals"></div>
+                </section>
+              </div>
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Agent Enrollment</h3>
+                  <p>One-line bootstrap commands generated from current settings.</p>
+                </div>
+                <pre id="overview-install" class="code-card"></pre>
+              </section>
+            </section>
 
-        <section class="panel">
-          <div class="section-head">
-            <h2>Live Log</h2>
-            <p>Select a job to inspect its event stream.</p>
-          </div>
-          <pre id="job-events" class="log-card">No job selected.</pre>
-        </section>
+            <section class="page" data-page="stacks">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Stacks</h3>
+                  <p>Table-first stack view with direct actions for discover, update, and rollback.</p>
+                </div>
+                <div id="stacks-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="hosts">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Hosts</h3>
+                  <p>Inventory, agent state, and patch actions in one view.</p>
+                </div>
+                <div id="hosts-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="agents">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Agents</h3>
+                  <p>Registered polling agents and their reported capabilities.</p>
+                </div>
+                <div id="agents-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="jobs">
+              <div class="split-layout">
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Queue Job</h3>
+                    <p>Use the opinionated UI here, or the same backend through Telegram commands.</p>
+                  </div>
+                  <form id="job-form" class="stack-form">
+                    <select id="job-kind">
+                      <option value="docker_discover">Docker discover</option>
+                      <option value="docker_update">Docker update</option>
+                      <option value="package_check">Package check</option>
+                      <option value="package_patch">Package patch</option>
+                      <option value="snapshot">Snapshot guest</option>
+                      <option value="proxmox_patch">Proxmox patch</option>
+                      <option value="proxmox_reboot">Proxmox reboot</option>
+                      <option value="backup">Backup</option>
+                      <option value="rollback">Rollback stack</option>
+                    </select>
+                    <select id="target-type">
+                      <option value="stack">Stack</option>
+                      <option value="host">Host</option>
+                    </select>
+                    <input id="target-ref" type="text" placeholder="stack or host" />
+                    <textarea id="job-payload" rows="8" spellcheck="false">{"executor":"auto","dry_run":true}</textarea>
+                    <button type="submit">Queue Job</button>
+                  </form>
+                  <p id="job-result" class="hint"></p>
+                </section>
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Job Log</h3>
+                    <p>Select a job row to inspect its event stream.</p>
+                  </div>
+                  <pre id="job-events" class="log-card">No job selected.</pre>
+                </section>
+              </div>
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Recent Jobs</h3>
+                  <p>Worker, agent, approval, and completion state in one table.</p>
+                </div>
+                <div id="jobs-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="approvals">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Approvals</h3>
+                  <p>Approve queued changes here or with Telegram.</p>
+                </div>
+                <div id="approvals-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="schedules">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Schedules</h3>
+                  <p>Disabled by default until you explicitly turn them on.</p>
+                </div>
+                <div id="schedules-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="backups">
+              <section class="panel">
+                <div class="section-head">
+                  <h3>Backups</h3>
+                  <p>Recorded artifacts from backup, rollback, and snapshot workflows.</p>
+                </div>
+                <div id="backups-table" class="table-shell"></div>
+              </section>
+            </section>
+
+            <section class="page" data-page="settings">
+              <div class="settings-grid">
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Public Repo Settings</h3>
+                    <p>These drive the UI-generated agent enrollment commands.</p>
+                  </div>
+                  <form id="public-settings-form" class="stack-form">
+                    <input id="public-base-url" type="text" placeholder="https://rackpatch.local" />
+                    <input id="public-repo-url" type="text" placeholder="https://github.com/SchmidtCode/rackpatch.git" />
+                    <input id="public-repo-ref" type="text" placeholder="main" />
+                    <input id="public-install-script-url" type="text" placeholder="optional explicit installer URL" />
+                    <button type="submit">Save Public Settings</button>
+                  </form>
+                  <p id="public-settings-result" class="hint"></p>
+                </section>
+
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Telegram</h3>
+                    <p>Configure the bot token, allowed chats, and text command access.</p>
+                  </div>
+                  <form id="telegram-settings-form" class="stack-form">
+                    <input id="telegram-bot-token" type="password" placeholder="leave blank to keep current token" />
+                    <textarea id="telegram-chat-ids" rows="4" placeholder="7993897341, 123456789"></textarea>
+                    <label class="checkbox-row">
+                      <input id="telegram-clear-token" type="checkbox" />
+                      Clear the stored bot token
+                    </label>
+                    <button type="submit">Save Telegram Settings</button>
+                  </form>
+                  <div id="telegram-status" class="meta-block"></div>
+                  <p id="telegram-settings-result" class="hint"></p>
+                </section>
+
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Agent Tokens</h3>
+                    <p>Create a new bootstrap token without replacing the default one.</p>
+                  </div>
+                  <form id="agent-token-form" class="stack-form">
+                    <input id="agent-token-label" type="text" placeholder="lab-docker-hosts" />
+                    <button type="submit">Create Agent Token</button>
+                  </form>
+                  <pre id="agent-token-result" class="code-card">No manual token created yet.</pre>
+                </section>
+
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Install Commands</h3>
+                    <p>These commands reflect the current public settings and bootstrap token.</p>
+                  </div>
+                  <pre id="settings-install" class="code-card"></pre>
+                </section>
+
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Site Paths</h3>
+                    <p>Current overlay and file locations loaded by rackpatch.</p>
+                  </div>
+                  <div id="settings-paths" class="meta-block"></div>
+                </section>
+
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Telegram Commands</h3>
+                    <p>Text interface for the same jobs and approvals shown in the UI.</p>
+                  </div>
+                  <pre id="telegram-help" class="code-card"></pre>
+                </section>
+              </div>
+            </section>
+          </section>
+        </div>
       </section>
     </main>
     <script src="/app.js"></script>

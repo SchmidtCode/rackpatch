@@ -27,7 +27,7 @@ AGENT_LABELS = [item.strip() for item in os.environ.get("OPS_AGENT_LABELS", "").
 AGENT_VERSION = os.environ.get("OPS_AGENT_VERSION", config.APP_VERSION)
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": f"ops-agent/{AGENT_VERSION}"})
+SESSION.headers.update({"User-Agent": f"rackpatch-agent/{AGENT_VERSION}"})
 
 
 def load_state() -> dict[str, Any]:
@@ -234,7 +234,7 @@ def execute_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 def main() -> int:
     state = ensure_registered()
-    print(f"ops-agent registered name={AGENT_NAME} id={state['agent_id']}", flush=True)
+    print(f"rackpatch-agent registered name={AGENT_NAME} id={state['agent_id']}", flush=True)
     while True:
         try:
             heartbeat(state)
@@ -249,7 +249,7 @@ def main() -> int:
                 complete(state, job_id, status, result)
             time.sleep(float(state.get("poll_seconds", config.AGENT_POLL_SECONDS)))
         except Exception as exc:  # noqa: BLE001
-            print(f"ops-agent loop error: {exc}", flush=True)
+            print(f"rackpatch-agent loop error: {exc}", flush=True)
             time.sleep(config.AGENT_POLL_SECONDS)
 
 
