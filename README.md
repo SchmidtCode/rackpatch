@@ -90,7 +90,11 @@ Keep `sites/local` private. It is ignored by git.
 ## GitHub Publishing
 
 1. Create a new GitHub repository.
-2. Choose the branch you want to publish as the public root branch.
+2. Use the prepared public branch:
+
+```bash
+git switch public/v0.1.0
+```
 3. Set these values in your local `.env` before rebuilding:
 
 ```dotenv
@@ -116,7 +120,7 @@ docker compose up -d --build ops-api ops-web
 
 ```bash
 git remote add origin git@github.com:YOUR-ORG/YOUR-REPO.git
-git push -u origin YOUR_PUBLIC_BRANCH:main
+git push -u origin public/v0.1.0:main
 git push origin v0.1.0
 ```
 
