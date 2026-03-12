@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c171a" />
     <title>rackpatch</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -10,7 +11,7 @@
     <div class="backdrop"></div>
     <main class="shell">
       <section id="login-screen" class="panel hero">
-        <div class="eyebrow">rackpatch v0.1</div>
+        <div class="eyebrow">rackpatch v0.2.0</div>
         <h1>Homelab patching and stack maintenance from one control plane.</h1>
         <p class="lede">
           Enroll agents, inspect hosts and stacks, queue jobs, handle approvals, and drive the
@@ -28,7 +29,7 @@
         <div class="app-layout">
           <aside class="panel sidebar">
             <div class="brand-block">
-              <div class="eyebrow">rackpatch v0.1</div>
+              <div class="eyebrow">rackpatch v0.2.0</div>
               <h1 class="brand-title">rackpatch</h1>
               <p class="sidebar-copy">
                 Opinionated maintenance for homelabs running Docker, Debian, Ubuntu, and Proxmox.
@@ -75,20 +76,25 @@
                     <h3>Recent Jobs</h3>
                     <p>Latest execution activity across workers and agents.</p>
                   </div>
-                  <div id="overview-jobs"></div>
+                  <div id="overview-jobs" class="table-shell"></div>
                 </section>
                 <section class="panel">
                   <div class="section-head">
                     <h3>Pending Approvals</h3>
                     <p>Queue changes safely before the live window.</p>
                   </div>
-                  <div id="overview-approvals"></div>
+                  <div id="overview-approvals" class="table-shell"></div>
                 </section>
               </div>
-              <section class="panel">
-                <div class="section-head">
-                  <h3>Agent Enrollment</h3>
-                  <p>One-line bootstrap commands generated from current settings.</p>
+                <section class="panel">
+                  <div class="section-head">
+                    <h3>Agent Enrollment</h3>
+                  <p>Switch between Docker Compose, Docker deploy, and systemd enrollment.</p>
+                </div>
+                <div class="install-mode-group">
+                  <button type="button" class="install-mode active" data-install-mode="compose">Docker Compose</button>
+                  <button type="button" class="install-mode" data-install-mode="container">Docker Deploy</button>
+                  <button type="button" class="install-mode" data-install-mode="systemd">Systemd</button>
                 </div>
                 <pre id="overview-install" class="code-card"></pre>
               </section>
@@ -212,6 +218,7 @@
                     <input id="public-repo-url" type="text" placeholder="https://github.com/SchmidtCode/rackpatch.git" />
                     <input id="public-repo-ref" type="text" placeholder="main" />
                     <input id="public-install-script-url" type="text" placeholder="optional explicit installer URL" />
+                    <input id="public-agent-compose-dir" type="text" placeholder="/srv/compose/rackpatch" />
                     <button type="submit">Save Public Settings</button>
                   </form>
                   <p id="public-settings-result" class="hint"></p>
@@ -250,7 +257,12 @@
                 <section class="panel">
                   <div class="section-head">
                     <h3>Install Commands</h3>
-                    <p>These commands reflect the current public settings and bootstrap token.</p>
+                    <p>Preview the active enrollment mode using the default bootstrap token.</p>
+                  </div>
+                  <div class="install-mode-group">
+                    <button type="button" class="install-mode active" data-install-mode="compose">Docker Compose</button>
+                    <button type="button" class="install-mode" data-install-mode="container">Docker Deploy</button>
+                    <button type="button" class="install-mode" data-install-mode="systemd">Systemd</button>
                   </div>
                   <pre id="settings-install" class="code-card"></pre>
                 </section>

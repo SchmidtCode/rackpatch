@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode container|systemd [--name NAME] [--labels a,b] [--install-source PATH]
+  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode container|systemd [--name NAME] [--labels a,b] [--install-source PATH] [--install-ref REF]
 EOF
 }
 
@@ -14,7 +14,8 @@ bootstrap_token=""
 mode="container"
 name="$(hostname)"
 labels=""
-install_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+install_source=""
+install_ref=""
 tmp_root=""
 
 while [[ $# -gt 0 ]]; do
@@ -43,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       install_source="$2"
       shift 2
       ;;
+    --install-ref)
+      install_ref="$2"
+      shift 2
+      ;;
     *)
       usage
       exit 1
@@ -53,6 +58,14 @@ done
 if [[ -z "${server_url}" || -z "${bootstrap_token}" ]]; then
   usage
   exit 1
+fi
+
+if [[ -z "${install_source}" ]]; then
+  if [[ -n "${BASH_SOURCE[0]-}" ]]; then
+    install_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  else
+    install_source="$(pwd)"
+  fi
 fi
 
 cleanup() {
@@ -69,7 +82,11 @@ resolve_source() {
   fi
   if [[ "${install_source}" =~ ^https?:// ]] || [[ "${install_source}" =~ \.git$ ]]; then
     tmp_root="$(mktemp -d)"
-    git clone --depth 1 "${install_source}" "${tmp_root}" >/dev/null 2>&1
+    if [[ -n "${install_ref}" ]]; then
+      git clone --depth 1 --branch "${install_ref}" "${install_source}" "${tmp_root}" >/dev/null 2>&1
+    else
+      git clone --depth 1 "${install_source}" "${tmp_root}" >/dev/null 2>&1
+    fi
     printf '%s\n' "${tmp_root}"
     return
   fi

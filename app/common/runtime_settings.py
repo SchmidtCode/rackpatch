@@ -60,10 +60,15 @@ def get_public_settings() -> dict[str, str]:
     repo_url = _normalize_text(stored.get("repo_url", config.PUBLIC_REPO_URL), strip_trailing_slash=True)
     repo_ref = _normalize_text(stored.get("repo_ref", config.PUBLIC_REPO_REF)) or config.PUBLIC_REPO_REF
     install_script_override = _normalize_text(stored.get("install_script_url", ""), strip_trailing_slash=True)
+    agent_compose_dir = _normalize_text(
+        stored.get("agent_compose_dir", config.PUBLIC_AGENT_COMPOSE_DIR),
+        strip_trailing_slash=True,
+    )
     return {
         "base_url": base_url or config.PUBLIC_BASE_URL,
         "repo_url": repo_url or config.PUBLIC_REPO_URL,
         "repo_ref": repo_ref or config.PUBLIC_REPO_REF,
+        "agent_compose_dir": agent_compose_dir or config.PUBLIC_AGENT_COMPOSE_DIR,
         "install_script_url_override": install_script_override,
         "install_script_url": config.derive_public_install_script_url(
             repo_url or config.PUBLIC_REPO_URL,
@@ -75,11 +80,11 @@ def get_public_settings() -> dict[str, str]:
 
 def set_public_settings(payload: dict[str, Any]) -> dict[str, str]:
     stored = _load_json_setting(PUBLIC_SETTINGS_KEY)
-    for key in ("base_url", "repo_url", "repo_ref", "install_script_url"):
+    for key in ("base_url", "repo_url", "repo_ref", "install_script_url", "agent_compose_dir"):
         if key in payload:
             stored[key] = _normalize_text(
                 payload.get(key, ""),
-                strip_trailing_slash=key in {"base_url", "repo_url", "install_script_url"},
+                strip_trailing_slash=key in {"base_url", "repo_url", "install_script_url", "agent_compose_dir"},
             )
     _save_json_setting(PUBLIC_SETTINGS_KEY, stored)
     return get_public_settings()

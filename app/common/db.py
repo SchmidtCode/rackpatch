@@ -175,11 +175,13 @@ def init_db() -> None:
                         ("default-bootstrap", bootstrap_hash),
                     )
                 for schedule in site.default_schedules():
+                    payload = schedule["payload"]
                     cur.execute(
-                        "SELECT id FROM schedules WHERE name = %s",
+                        "SELECT id, kind, cron_expr, payload FROM schedules WHERE name = %s",
                         (schedule["name"],),
                     )
-                    if cur.fetchone() is None:
+                    row = cur.fetchone()
+                    if row is None:
                         cur.execute(
                             """
                             INSERT INTO schedules (name, kind, cron_expr, payload, enabled)
@@ -189,8 +191,31 @@ def init_db() -> None:
                                 schedule["name"],
                                 schedule["kind"],
                                 schedule["cron_expr"],
-                                json.dumps(schedule["payload"]),
+                                json.dumps(payload),
                                 False,
+                            ),
+                        )
+                        continue
+                    if (
+                        row["kind"] != schedule["kind"]
+                        or row["cron_expr"] != schedule["cron_expr"]
+                        or (row["payload"] or {}) != payload
+                    ):
+                        cur.execute(
+                            """
+                            UPDATE schedules
+                            SET kind = %s,
+                                cron_expr = %s,
+                                payload = %s,
+                                next_run_at = NULL,
+                                updated_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (
+                                schedule["kind"],
+                                schedule["cron_expr"],
+                                json.dumps(payload),
+                                row["id"],
                             ),
                         )
             finally:

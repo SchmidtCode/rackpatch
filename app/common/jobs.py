@@ -4,10 +4,12 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from common import config, db, site
+from common import config, db, notify, site
 
 
-AGENT_JOB_KINDS = {"package_check", "package_patch", "docker_update"}
+# Route only lightweight read-only checks through agents. Update execution stays on the
+# worker path so stack backups, snapshots, and ordered playbooks are not bypassed.
+AGENT_JOB_KINDS = {"package_check"}
 APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
 
 
@@ -122,6 +124,8 @@ def create_job(
         )
         job = cur.fetchone()
     append_event(str(job["id"]), f"[{now_iso()}] job created kind={kind} executor={executor} target={target_ref}")
+    if requires_approval:
+        notify.send_job_event(job, "pending")
     return job
 
 
@@ -142,5 +146,5 @@ def approve_job(job_id: str, username: str) -> dict[str, Any] | None:
         job = cur.fetchone()
     if job:
         append_event(job_id, f"[{now_iso()}] job approved by {username}")
+        notify.send_job_event(job, "approved")
     return job
-

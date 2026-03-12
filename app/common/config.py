@@ -9,7 +9,7 @@ def env(name: str, default: str) -> str:
 
 
 APP_NAME = "rackpatch"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 API_HOST = env("OPS_API_HOST", "0.0.0.0")
 API_PORT = int(env("OPS_API_PORT", "9080"))
@@ -30,6 +30,7 @@ PUBLIC_BASE_URL = env("OPS_PUBLIC_BASE_URL", "http://YOUR-OPS-HOST:3011").rstrip
 PUBLIC_REPO_URL = env("OPS_PUBLIC_REPO_URL", "https://github.com/SchmidtCode/rackpatch.git").rstrip("/")
 PUBLIC_REPO_REF = env("OPS_PUBLIC_REPO_REF", "main")
 PUBLIC_INSTALL_SCRIPT_URL = env("OPS_PUBLIC_INSTALL_SCRIPT_URL", "").rstrip("/")
+PUBLIC_AGENT_COMPOSE_DIR = env("OPS_PUBLIC_AGENT_COMPOSE_DIR", "/srv/compose/rackpatch").rstrip("/")
 
 WORKER_POLL_SECONDS = float(env("OPS_WORKER_POLL_SECONDS", "5"))
 SCHEDULE_POLL_SECONDS = float(env("OPS_SCHEDULE_POLL_SECONDS", "20"))

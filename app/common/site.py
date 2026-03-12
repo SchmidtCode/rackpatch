@@ -82,30 +82,69 @@ def load_hosts() -> list[dict[str, Any]]:
 
 def default_schedules() -> list[dict[str, Any]]:
     windows = load_group_vars().get("default_windows", {})
+    stack_names = [stack["name"] for stack in load_stacks() if stack.get("name")]
     return [
         {
-            "name": "Discovery",
+            "name": "Docker Image Discovery",
             "kind": "docker_discover",
-            "cron_expr": windows.get("discovery", "0 5 * * *"),
-            "payload": {"window": "all"},
+            "cron_expr": windows.get("docker_discovery", windows.get("discovery", "0 5 * * *")),
+            "payload": {
+                "executor": "worker",
+                "window": "all",
+                "requires_approval": False,
+                "notify": True,
+                "notify_on": ["completed", "failed"],
+            },
         },
         {
-            "name": "Low-Risk Docker Auto",
-            "kind": "docker_update",
-            "cron_expr": windows.get("docker_auto", "30 5 * * *"),
-            "payload": {"window": "auto-windowed", "dry_run": False},
-        },
-        {
-            "name": "Approved Maintenance Reminder",
+            "name": "Host Package Check",
             "kind": "package_check",
-            "cron_expr": windows.get("approved_guest_container", "0 4 * * 6"),
-            "payload": {"scope": "all"},
+            "cron_expr": windows.get("host_package_check", "15 5 * * *"),
+            "payload": {
+                "executor": "worker",
+                "scope": "all",
+                "requires_approval": False,
+                "notify": True,
+                "notify_on": ["completed", "failed"],
+            },
         },
         {
-            "name": "Proxmox Maintenance Reminder",
+            "name": "Guest OS Patch Approval",
+            "kind": "package_patch",
+            "cron_expr": windows.get("guest_patch_approval", windows.get("approved_guest_container", "0 4 * * 6")),
+            "payload": {
+                "executor": "worker",
+                "target_ref": "guests",
+                "limit": "guests",
+                "dry_run": False,
+                "requires_approval": True,
+                "notify": True,
+            },
+        },
+        {
+            "name": "Docker Stack Update Approval",
+            "kind": "docker_update",
+            "cron_expr": windows.get("docker_update_approval", windows.get("docker_auto", "30 5 * * 6")),
+            "payload": {
+                "executor": "worker",
+                "target_ref": "full-stack-catalog",
+                "selected_stacks": stack_names,
+                "dry_run": False,
+                "requires_approval": True,
+                "notify": True,
+            },
+        },
+        {
+            "name": "Proxmox Node Patch Approval",
             "kind": "proxmox_patch",
-            "cron_expr": windows.get("proxmox_nodes", "30 4 * * 0"),
-            "payload": {"limit": "proxmox_nodes", "dry_run": True},
+            "cron_expr": windows.get("proxmox_patch_approval", windows.get("proxmox_nodes", "30 4 * * 0")),
+            "payload": {
+                "executor": "worker",
+                "target_ref": "proxmox_nodes",
+                "limit": "proxmox_nodes",
+                "dry_run": False,
+                "requires_approval": True,
+                "notify": True,
+            },
         },
     ]
-
