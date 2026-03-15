@@ -141,6 +141,7 @@ Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeplo
 Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host package maintenance, run the dedicated helper enable script after the agent is installed.
 
 The web UI treats package check and package patch as helper-gated actions. Hosts without the limited host-maintenance helper stay visible, but their package actions and package-job picker entries are greyed out until that access is enabled.
+Package maintenance no longer falls back to the legacy worker or SSH path. Multi-host package requests fan out into one helper-backed agent job per eligible host.
 
 Example container install:
 
@@ -181,6 +182,7 @@ The helper exposes only approved host-maintenance actions and is intended for pa
 - The helper is limited to named maintenance actions such as package check and package patch.
 - The helper does not accept arbitrary shell, free-form commands, package names, or paths from the control plane.
 - Package check and package patch in the web UI are intentionally disabled on hosts that do not advertise the matching helper-backed capability.
+- Package maintenance is agent-only now; if a host cannot satisfy helper or policy requirements, rackpatch rejects or skips that host instead of falling back to worker or SSH execution.
 - Every future privileged action must have:
   a named helper action, a dedicated root-owned wrapper, an explicit capability, and UI disclosure.
 - Docker socket access is still a separate trust-sensitive capability and will be hardened in a later phase.

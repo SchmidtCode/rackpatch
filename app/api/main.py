@@ -27,6 +27,7 @@ if config.CORS_ORIGINS:
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
+    jobs.retire_legacy_package_jobs()
 
 
 def _json_body(value: Any) -> dict[str, Any]:
@@ -289,6 +290,11 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
                 "agent": agent,
                 "control_plane_host": control_plane_host,
                 "runtime": _host_runtime(agent, host, control_plane_host=control_plane_host),
+                "job_access": {
+                    "package_check": jobs.host_job_access("package_check", host["name"]),
+                    "package_patch_dry_run": jobs.host_job_access("package_patch", host["name"], {"dry_run": True}),
+                    "package_patch_live": jobs.host_job_access("package_patch", host["name"], {"dry_run": False}),
+                },
             }
         )
     return {"items": items}

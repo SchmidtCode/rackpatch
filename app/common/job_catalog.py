@@ -70,7 +70,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         "label": "Package check",
         "mode": "host_multi",
         "target_type": "host",
-        "summary": "Choose one or more guest or Docker hosts to inspect for package updates.",
+        "summary": "Choose one or more guest or Docker hosts to inspect for package updates. Each selected host queues its own helper-backed agent job.",
         "special_access": {
             "required_capability": "host-package-check",
             "label": "limited host-maintenance helper",
@@ -79,7 +79,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
             "missing_detail": "Enable the limited host-maintenance helper on the host agent to use package checks from the UI.",
         },
         "defaults": {
-            "executor": "auto",
+            "executor": "agent",
             "requires_approval": False,
         },
         "host_groups_exclude": ["proxmox_nodes"],
@@ -90,7 +90,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         "label": "Package patch",
         "mode": "host_multi",
         "target_type": "host",
-        "summary": "Choose one or more guest or Docker hosts to patch.",
+        "summary": "Choose one or more guest or Docker hosts to patch. Each selected host queues its own helper-backed agent job.",
         "special_access": {
             "required_capability": "host-package-patch",
             "label": "limited host-maintenance helper",
@@ -99,7 +99,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
             "missing_detail": "Enable the limited host-maintenance helper with package patch access on the host agent to use package patching from the UI.",
         },
         "defaults": {
-            "executor": "auto",
+            "executor": "agent",
             "dry_run": True,
             "requires_approval": False,
         },

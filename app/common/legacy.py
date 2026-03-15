@@ -120,23 +120,6 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
         else:
             command.extend(["-e", f"selected_stacks={selected}"])
         return command
-    if kind == "package_check":
-        command = ["python3", "scripts/check_package_updates.py", "--scope", payload.get("scope", "all")]
-        for host in payload.get("hosts", []):
-            command.extend(["--host", host])
-        return command
-    if kind == "package_patch":
-        limit = payload.get("limit", target_ref)
-        return [
-            "ansible-playbook",
-            "playbooks/patch_guests.yml",
-            "-i",
-            inventory,
-            "--limit",
-            limit,
-            "-e",
-            f"dry_run={dry_run}",
-        ]
     if kind == "snapshot":
         limit = payload.get("limit", target_ref)
         return [

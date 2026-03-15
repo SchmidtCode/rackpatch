@@ -41,6 +41,10 @@ def inventory_path() -> Path:
     return site_root() / "inventory" / "hosts.yml"
 
 
+def load_inventory() -> dict[str, Any]:
+    return _load_yaml(inventory_path())
+
+
 def stacks_path() -> Path:
     return site_root() / "stacks.yml"
 
@@ -78,7 +82,7 @@ def load_maintenance() -> dict[str, Any]:
 
 
 def load_hosts() -> list[dict[str, Any]]:
-    inventory = _load_yaml(inventory_path())
+    inventory = load_inventory()
     results: list[dict[str, Any]] = []
 
     def walk(node: dict[str, Any], group_name: str) -> None:
@@ -97,6 +101,42 @@ def load_hosts() -> list[dict[str, Any]]:
     for item in results:
         deduped[item["name"]] = item
     return list(deduped.values())
+
+
+def group_hosts(group_name: str) -> list[str]:
+    inventory = load_inventory()
+    root = inventory.get("all") or {}
+    if group_name == "all":
+        target_group = root
+    else:
+        target_group = None
+
+        def find_group(node: dict[str, Any], desired: str) -> dict[str, Any] | None:
+            for child_name, child_data in (node.get("children") or {}).items():
+                if child_name == desired and isinstance(child_data, dict):
+                    return child_data
+                if isinstance(child_data, dict):
+                    match = find_group(child_data, desired)
+                    if match is not None:
+                        return match
+            return None
+
+        target_group = find_group(root, group_name)
+
+    if not isinstance(target_group, dict):
+        return []
+
+    def collect(node: dict[str, Any], selected: list[str]) -> None:
+        for host_name in (node.get("hosts") or {}):
+            if host_name not in selected:
+                selected.append(host_name)
+        for child_data in (node.get("children") or {}).values():
+            if isinstance(child_data, dict):
+                collect(child_data, selected)
+
+    hosts: list[str] = []
+    collect(target_group, hosts)
+    return hosts
 
 
 def default_schedules() -> list[dict[str, Any]]:
@@ -120,8 +160,8 @@ def default_schedules() -> list[dict[str, Any]]:
             "kind": "package_check",
             "cron_expr": windows.get("host_package_check", "15 5 * * *"),
             "payload": {
-                "executor": "worker",
-                "scope": "all",
+                "executor": "agent",
+                "scope": "guests",
                 "requires_approval": False,
                 "notify": True,
                 "notify_on": ["completed", "failed"],
@@ -132,7 +172,7 @@ def default_schedules() -> list[dict[str, Any]]:
             "kind": "package_patch",
             "cron_expr": windows.get("guest_patch_approval", windows.get("approved_guest_container", "0 4 * * 6")),
             "payload": {
-                "executor": "worker",
+                "executor": "agent",
                 "target_ref": "guests",
                 "limit": "guests",
                 "dry_run": False,

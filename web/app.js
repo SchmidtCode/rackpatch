@@ -324,6 +324,21 @@ function getJobSpecialAccess(kind) {
   return getJobKindConfig(kind).special_access || null;
 }
 
+function getEffectiveJobOptionValues(kind) {
+  return {
+    ...getJobKindConfig(kind).defaults,
+    ...getStoredJobOptionValues(kind),
+    ...getRenderedJobOptionValues(kind),
+  };
+}
+
+function getPackagePatchAccessKey(kind) {
+  if (kind !== "package_patch") {
+    return kind;
+  }
+  return getEffectiveJobOptionValues(kind).dry_run === false ? "package_patch_live" : "package_patch_dry_run";
+}
+
 function hostHasCapability(host, capability) {
   const capabilities = Array.isArray(host?.agent?.capabilities)
     ? host.agent.capabilities.map((value) => String(value))
@@ -336,6 +351,14 @@ function getJobHostAccess(host, kind) {
   if (!access) {
     return { eligible: true, detail: "" };
   }
+  const accessKey = getPackagePatchAccessKey(kind);
+  const advertisedAccess = host?.job_access?.[accessKey];
+  if (advertisedAccess && typeof advertisedAccess.eligible === "boolean") {
+    return {
+      eligible: advertisedAccess.eligible,
+      detail: advertisedAccess.reason || hostMaintenanceInfo(host.agent).detail || access.summary || "",
+    };
+  }
   if (hostHasCapability(host, access.required_capability)) {
     return {
       eligible: true,
@@ -346,6 +369,17 @@ function getJobHostAccess(host, kind) {
     eligible: false,
     detail: host.agent ? hostMaintenanceInfo(host.agent).detail : access.missing_detail || `${access.label} required.`,
   };
+}
+
+function getNamedHostAccess(host, accessKey, fallbackKind) {
+  const advertisedAccess = host?.job_access?.[accessKey];
+  if (advertisedAccess && typeof advertisedAccess.eligible === "boolean") {
+    return {
+      eligible: advertisedAccess.eligible,
+      detail: advertisedAccess.reason || hostMaintenanceInfo(host.agent).detail || "",
+    };
+  }
+  return getJobHostAccess(host, fallbackKind);
 }
 
 function buttonStateAttrs(disabled, title = "") {
@@ -631,14 +665,14 @@ function updateJobHostSelectionState(kind) {
   if (!eligibleHosts.length) {
     jobHostToggle.textContent = "No eligible hosts";
     jobHostStatus.textContent = access
-      ? `${hosts.length} host${hosts.length === 1 ? "" : "s"} listed, but this job requires ${access.label}.`
+      ? `${hosts.length} host${hosts.length === 1 ? "" : "s"} listed, but none currently satisfy the helper and policy requirements for this job.`
       : `${hosts.length} host${hosts.length === 1 ? "" : "s"} listed, but none are available right now.`;
     return;
   }
 
   if (selected.length === 0) {
     jobHostToggle.textContent = "Choose host(s)";
-    jobHostStatus.textContent = `${eligibleHosts.length} host${eligibleHosts.length === 1 ? "" : "s"} available.${blockedCount ? ` ${blockedCount} greyed out until ${access?.label || "special access"} is enabled.` : ""}`;
+    jobHostStatus.textContent = `${eligibleHosts.length} host${eligibleHosts.length === 1 ? "" : "s"} available.${blockedCount ? ` ${blockedCount} greyed out until helper and policy requirements are satisfied.` : ""}`;
     return;
   }
 
@@ -762,17 +796,20 @@ function buildJobRequest() {
   } else if (config.mode === "host_multi") {
     const selectedHosts = getSelectedJobHosts();
     const availableHosts = getJobHostsForKind(kind);
-    const access = getJobSpecialAccess(kind);
     if (!selectedHosts.length) {
       throw new Error("Select at least one host.");
     }
-    const blockedHosts = selectedHosts.filter((hostName) => {
+    const blockedHosts = selectedHosts.map((hostName) => {
       const host = availableHosts.find((item) => item.name === hostName);
-      return host && !getJobHostAccess(host, kind).eligible;
-    });
+      const hostAccess = host ? getJobHostAccess(host, kind) : { eligible: true, detail: "" };
+      return { hostName, ...hostAccess };
+    }).filter((item) => !item.eligible);
     if (blockedHosts.length) {
       throw new Error(
-        `${access?.short_label || "This job requires special access."} Enable it on: ${blockedHosts.join(", ")}`
+        blockedHosts
+          .slice(0, 4)
+          .map((item) => `${item.hostName}: ${item.detail || "not eligible"}`)
+          .join("; ")
       );
     }
     targetRef = selectedHosts.join(",");
@@ -974,13 +1011,16 @@ function renderHosts() {
         ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span><span class="subline">${escapeHtml(maintenance.detail)}</span>`
         : `${statusBadge(runtime.status || "Worker-routed")}<span class="subline">${escapeHtml(runtime.detail || "Agent optional. Worker and inventory jobs still available.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
-      const packageCheckAccess = getJobHostAccess(item, "package_check");
-      const packagePatchAccess = getJobHostAccess(item, "package_patch");
-      const packageActionNote = packagePatchAccess.eligible
+      const packageCheckAccess = getNamedHostAccess(item, "package_check", "package_check");
+      const packagePatchDryAccess = getNamedHostAccess(item, "package_patch_dry_run", "package_patch");
+      const packagePatchLiveAccess = getNamedHostAccess(item, "package_patch_live", "package_patch");
+      const packageActionNote = packagePatchLiveAccess.eligible
         ? "Package actions limited to approved host-maintenance helper access."
-        : packageCheckAccess.eligible
-          ? "Package checks are enabled. Package patch access is not enabled on this host."
-          : "Package jobs require the limited host-maintenance helper on this host.";
+        : packagePatchDryAccess.eligible
+          ? "Dry-run helper patching is enabled. Live helper patching is blocked by host policy."
+          : packageCheckAccess.eligible
+            ? "Package checks are enabled. Package patch access is not enabled on this host."
+            : "Package jobs require the limited host-maintenance helper on this host.";
       const actionButtons = isProxmoxNode
         ? `
             <button class="secondary" data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="true">Patch Dry</button>
@@ -994,12 +1034,12 @@ function renderHosts() {
               packageCheckAccess.detail
             )}>Check</button>
             <button class="secondary" data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
-              !packagePatchAccess.eligible,
-              packagePatchAccess.detail
+              !packagePatchDryAccess.eligible,
+              packagePatchDryAccess.detail
             )}>Patch Dry</button>
             <button data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="false"${buttonStateAttrs(
-              !packagePatchAccess.eligible,
-              packagePatchAccess.detail
+              !packagePatchLiveAccess.eligible,
+              packagePatchLiveAccess.detail
             )}>Patch Live</button>
             <button class="secondary" data-host-kind="snapshot" data-host-name="${hostName}" data-dry-run="false">Snapshot</button>
             <span class="subline">${escapeHtml(packageActionNote)}</span>
@@ -1425,12 +1465,46 @@ async function deleteBackup(backupId, deleteSupported) {
   await refreshDashboard();
 }
 
+function formatQueueResult(result, fallbackKind, fallbackTarget) {
+  const kind = result?.kind || fallbackKind;
+  const targetRef = result?.target_ref || fallbackTarget;
+  const queuedJobs = Array.isArray(result?.jobs) ? result.jobs : [];
+  const jobIds = Array.isArray(result?.job_ids) ? result.job_ids : [];
+  const skipped = Array.isArray(result?.skipped) ? result.skipped : [];
+  if (!result?.fanout) {
+    const jobId = result?.id ? shortId(result.id) : "unknown";
+    return {
+      detail: `Queued job ${jobId}`,
+      flash: `Queued ${kind} for ${targetRef}.`,
+    };
+  }
+
+  const queuedCount = Number(result?.queued_count || queuedJobs.length || jobIds.length || 0);
+  const lines = [`Queued ${queuedCount} ${kind} job${queuedCount === 1 ? "" : "s"} for ${targetRef}.`];
+  if (jobIds.length) {
+    lines.push(`Jobs: ${jobIds.map((value) => shortId(value)).join(", ")}`);
+  }
+  if (skipped.length) {
+    lines.push(
+      `Skipped: ${skipped
+        .slice(0, 4)
+        .map((item) => `${item.target_ref} (${item.reason})`)
+        .join("; ")}${skipped.length > 4 ? ` +${skipped.length - 4} more` : ""}`
+    );
+  }
+  return {
+    detail: lines.join("\n"),
+    flash: `Queued ${queuedCount} ${kind} job${queuedCount === 1 ? "" : "s"}${skipped.length ? `; skipped ${skipped.length}` : ""}.`,
+  };
+}
+
 async function queuePreset(kind, targetType, targetRef, payload) {
   const result = await api("/api/v1/jobs", {
     method: "POST",
     body: JSON.stringify({ kind, target_type: targetType, target_ref: targetRef, payload }),
   });
-  showFlash(`Queued ${kind} for ${targetRef}.`);
+  const queueSummary = formatQueueResult(result, kind, targetRef);
+  showFlash(queueSummary.flash);
   await refreshDashboard();
   return result;
 }
@@ -1597,10 +1671,16 @@ jobHostOptions.addEventListener("change", () => {
 
 jobOptions.addEventListener("change", () => {
   storeRenderedJobOptionValues(jobKindSelect.value);
+  if (getJobKindConfig(jobKindSelect.value).mode === "host_multi") {
+    renderJobHostOptions(jobKindSelect.value, true);
+  }
 });
 
 jobOptions.addEventListener("input", () => {
   storeRenderedJobOptionValues(jobKindSelect.value);
+  if (getJobKindConfig(jobKindSelect.value).mode === "host_multi") {
+    renderJobHostOptions(jobKindSelect.value, true);
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -1633,8 +1713,9 @@ document.getElementById("job-form").addEventListener("submit", async (event) => 
         payload: request.payload,
       }),
     });
-    jobResult.textContent = `Queued job ${result.id}`;
-    showFlash(`Queued ${result.kind} for ${result.target_ref}.`);
+    const queueSummary = formatQueueResult(result, request.kind, request.targetRef);
+    jobResult.textContent = queueSummary.detail;
+    showFlash(queueSummary.flash);
     await refreshDashboard();
   } catch (error) {
     jobResult.textContent = error.message;
@@ -1717,7 +1798,7 @@ appScreen.addEventListener("click", async (event) => {
     if (!hostName || !kind) {
       return;
     }
-    const payload = { executor: kind.startsWith("proxmox") || kind === "snapshot" ? "worker" : "auto" };
+    const payload = { executor: kind.startsWith("proxmox") || kind === "snapshot" ? "worker" : "agent" };
     if (kind !== "package_check") {
       payload.dry_run = dryRun;
     }
