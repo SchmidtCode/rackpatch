@@ -10,8 +10,8 @@ import urllib.request
 from pathlib import Path
 
 
-OPS_ROOT = Path(__file__).resolve().parents[2]
-ENV_FILE = OPS_ROOT / ".env"
+RACKPATCH_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = RACKPATCH_ROOT / ".env"
 DEFAULT_URL = "http://127.0.0.1:3011"
 PROJECT_NAME = "Homelab Updates"
 
@@ -90,10 +90,10 @@ def ensure_item(client: SemaphoreClient, list_path: str, create_path: str, updat
 
 def main() -> int:
     base_url = get_env("SEMAPHORE_URL", DEFAULT_URL)
-    auth = get_env("SEMAPHORE_ADMIN_LOGIN", "opsadmin")
+    auth = get_env("SEMAPHORE_ADMIN_LOGIN", "admin")
     password = get_env("SEMAPHORE_ADMIN_PASSWORD")
     if not password:
-        print("SEMAPHORE_ADMIN_PASSWORD is not set in the environment or ops/.env", file=sys.stderr)
+        print("SEMAPHORE_ADMIN_PASSWORD is not set in the environment or rackpatch/.env", file=sys.stderr)
         return 1
 
     client = SemaphoreClient(base_url, auth, password)
@@ -122,10 +122,10 @@ def main() -> int:
         f"/api/project/{project_id}/inventory",
         f"/api/project/{project_id}/inventory",
         f"/api/project/{project_id}/inventory/{{id}}",
-        "Ops Inventory File",
+        "Rackpatch Inventory File",
         {
             "project_id": project_id,
-            "name": "Ops Inventory File",
+            "name": "Rackpatch Inventory File",
             "inventory": "/workspace/inventory/hosts.yml",
             "ssh_key_id": none_key_id,
             "type": "file",
@@ -137,10 +137,10 @@ def main() -> int:
         f"/api/project/{project_id}/repositories",
         f"/api/project/{project_id}/repositories",
         f"/api/project/{project_id}/repositories/{{id}}",
-        "Ops Workspace",
+        "Rackpatch Workspace",
         {
             "project_id": project_id,
-            "name": "Ops Workspace",
+            "name": "Rackpatch Workspace",
             "git_url": "/workspace",
             "git_branch": "main",
             "ssh_key_id": none_key_id,
@@ -150,7 +150,7 @@ def main() -> int:
     dry_env_json = json.dumps(
         {
             "ANSIBLE_CONFIG": "/workspace/ansible.cfg",
-            "OPS_DRY_RUN": "true",
+            "RACKPATCH_DRY_RUN": "true",
             "PYTHONUNBUFFERED": "1",
             "TZ": get_env("TZ", "America/New_York"),
         }
@@ -158,7 +158,7 @@ def main() -> int:
     live_env_json = json.dumps(
         {
             "ANSIBLE_CONFIG": "/workspace/ansible.cfg",
-            "OPS_DRY_RUN": "false",
+            "RACKPATCH_DRY_RUN": "false",
             "PYTHONUNBUFFERED": "1",
             "TZ": get_env("TZ", "America/New_York"),
         }
@@ -169,10 +169,10 @@ def main() -> int:
         f"/api/project/{project_id}/environment",
         f"/api/project/{project_id}/environment",
         f"/api/project/{project_id}/environment/{{id}}",
-        "Ops Dry Run",
+        "Rackpatch Dry Run",
         {
             "project_id": project_id,
-            "name": "Ops Dry Run",
+            "name": "Rackpatch Dry Run",
             "env": dry_env_json,
             "json": "{}",
         },
@@ -183,10 +183,10 @@ def main() -> int:
         f"/api/project/{project_id}/environment",
         f"/api/project/{project_id}/environment",
         f"/api/project/{project_id}/environment/{{id}}",
-        "Ops Live",
+        "Rackpatch Live",
         {
             "project_id": project_id,
-            "name": "Ops Live",
+            "name": "Rackpatch Live",
             "env": live_env_json,
             "json": "{}",
         },
@@ -219,7 +219,7 @@ def main() -> int:
         },
         {
             "name": "Low-Risk Docker Updates",
-            "description": "Runs the live low-risk Docker update window against the mounted ops workspace.",
+            "description": "Runs the live low-risk Docker update window against the mounted rackpatch workspace.",
             "playbook": "scripts/semaphore/run-low-risk-updates.sh",
             "environment_id": live_env_id,
         },
@@ -273,10 +273,10 @@ def main() -> int:
         template_results.append((item["name"], state))
 
     print(f"project {PROJECT_NAME}: {project_state}")
-    print(f"repository Ops Workspace: {repo_state}")
-    print(f"inventory Ops Inventory File: {inventory_state}")
-    print(f"environment Ops Dry Run: {dry_env_state}")
-    print(f"environment Ops Live: {live_env_state}")
+    print(f"repository Rackpatch Workspace: {repo_state}")
+    print(f"inventory Rackpatch Inventory File: {inventory_state}")
+    print(f"environment Rackpatch Dry Run: {dry_env_state}")
+    print(f"environment Rackpatch Live: {live_env_state}")
     for name, state in template_results:
         print(f"template {name}: {state}")
 

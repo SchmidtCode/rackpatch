@@ -11,16 +11,15 @@ import requests
 from common import config, db, runtime_settings
 
 
-API_BASE = config.env("RACKPATCH_API_BASE", "http://api:9080", "OPS_API_BASE").rstrip("/")
+API_BASE = config.env("RACKPATCH_API_BASE", "http://api:9080").rstrip("/")
 OFFSET_FILE = Path(
     config.env(
         "RACKPATCH_TELEGRAM_OFFSET_FILE",
         str(config.DATA_ROOT / "telegram-offset.txt"),
-        "OPS_TELEGRAM_OFFSET_FILE",
     )
 )
-POLL_TIMEOUT = int(config.env("RACKPATCH_TELEGRAM_POLL_TIMEOUT", "25", "OPS_TELEGRAM_POLL_TIMEOUT"))
-IDLE_SLEEP_SECONDS = float(config.env("RACKPATCH_TELEGRAM_IDLE_SLEEP", "5", "OPS_TELEGRAM_IDLE_SLEEP"))
+POLL_TIMEOUT = int(config.env("RACKPATCH_TELEGRAM_POLL_TIMEOUT", "25"))
+IDLE_SLEEP_SECONDS = float(config.env("RACKPATCH_TELEGRAM_IDLE_SLEEP", "5"))
 
 API_SESSION = requests.Session()
 API_SESSION.headers.update({"User-Agent": f"rackpatch-telegram/{config.APP_VERSION}"})

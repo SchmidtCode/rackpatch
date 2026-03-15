@@ -56,14 +56,14 @@ send_message() {
   local attempt=1
   local max_attempts=10
   while (( attempt <= max_attempts )); do
-    if OPS_TG_BOT_TOKEN="${BOT_TOKEN}" OPS_TG_CHAT_IDS="${CHAT_IDS_CSV}" OPS_TG_MESSAGE="${message}" python3 - <<'PY'
+    if RACKPATCH_TG_BOT_TOKEN="${BOT_TOKEN}" RACKPATCH_TG_CHAT_IDS="${CHAT_IDS_CSV}" RACKPATCH_TG_MESSAGE="${message}" python3 - <<'PY'
 import os
 import urllib.parse
 import urllib.request
 
-token = os.environ.get("OPS_TG_BOT_TOKEN", "")
-message = os.environ.get("OPS_TG_MESSAGE", "")
-chat_ids = [item.strip() for item in os.environ.get("OPS_TG_CHAT_IDS", "").split(",") if item.strip()]
+token = os.environ.get("RACKPATCH_TG_BOT_TOKEN", "")
+message = os.environ.get("RACKPATCH_TG_MESSAGE", "")
+chat_ids = [item.strip() for item in os.environ.get("RACKPATCH_TG_CHAT_IDS", "").split(",") if item.strip()]
 if not token or not chat_ids or not message:
     raise SystemExit(0)
 
@@ -91,7 +91,7 @@ sleep 20
 
 overall_status="ok"
 message_lines=(
-  "Ops Proxmox ${REBOOT_MODE} reboot completed"
+  "Rackpatch Proxmox ${REBOOT_MODE} reboot completed"
   "node=${NODE_NAME}"
   "result=${overall_status}"
 )

@@ -6,15 +6,14 @@ services:
     container_name: rackpatch-db
     restart: unless-stopped
     environment:
-      # Preserve the legacy database name and user so existing volumes upgrade cleanly.
-      POSTGRES_DB: ops
-      POSTGRES_USER: ops
-      POSTGRES_PASSWORD: ${RACKPATCH_DB_PASSWORD:-${OPS_DB_PASSWORD:-ops}}
+      POSTGRES_DB: rackpatch
+      POSTGRES_USER: rackpatch
+      POSTGRES_PASSWORD: ${RACKPATCH_DB_PASSWORD:-change-me}
       TZ: ${TZ:-America/New_York}
     volumes:
       - rackpatch-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ops -d ops"]
+      test: ["CMD-SHELL", "pg_isready -U rackpatch -d rackpatch"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -38,21 +37,21 @@ services:
     environment:
       RACKPATCH_API_HOST: 0.0.0.0
       RACKPATCH_API_PORT: 9080
-      RACKPATCH_DB_DSN: postgresql://ops:${RACKPATCH_DB_PASSWORD:-${OPS_DB_PASSWORD:-ops}}@db:5432/ops
+      RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
-      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-${OPS_SITE_NAME:-example}}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-${OPS_SITE_ROOT:-/workspace/sites/example}}
-      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-${OPS_ADMIN_USERNAME:-opsadmin}}
-      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-${OPS_ADMIN_PASSWORD:-change-me}}
-      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-${OPS_AUTH_SECRET:-change-me}}
-      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_AGENT_BOOTSTRAP_TOKEN:-${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}}
-      RACKPATCH_PUBLIC_BASE_URL: ${RACKPATCH_PUBLIC_BASE_URL:-${OPS_PUBLIC_BASE_URL:-http://YOUR-RACKPATCH-HOST:3011}}
-      RACKPATCH_PUBLIC_REPO_URL: ${RACKPATCH_PUBLIC_REPO_URL:-${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}}
-      RACKPATCH_PUBLIC_REPO_REF: ${RACKPATCH_PUBLIC_REPO_REF:-${OPS_PUBLIC_REPO_REF:-main}}
-      RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL: ${RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL:-${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}}
-      RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR:-${OPS_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch-agent}}
-      RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-${OPS_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}}
-      RACKPATCH_CORS_ORIGINS: ${RACKPATCH_CORS_ORIGINS:-${OPS_CORS_ORIGINS:-}}
+      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
+      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
+      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
+      RACKPATCH_PUBLIC_BASE_URL: ${RACKPATCH_PUBLIC_BASE_URL:-http://YOUR-RACKPATCH-HOST:3011}
+      RACKPATCH_PUBLIC_REPO_URL: ${RACKPATCH_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
+      RACKPATCH_PUBLIC_REPO_REF: ${RACKPATCH_PUBLIC_REPO_REF:-main}
+      RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL: ${RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL:-}
+      RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch-agent}
+      RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
+      RACKPATCH_CORS_ORIGINS: ${RACKPATCH_CORS_ORIGINS:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
@@ -60,9 +59,9 @@ services:
     volumes:
       - .:/workspace
       - ./data:/data
-      - ${RACKPATCH_COMPOSE_ROOT:-${OPS_COMPOSE_ROOT:-/srv/compose}}:${RACKPATCH_COMPOSE_ROOT:-${OPS_COMPOSE_ROOT:-/srv/compose}}
+      - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${RACKPATCH_SSH_DIR:-${OPS_SSH_DIR:-/root/.ssh}}:/ssh-source:ro
+      - ${RACKPATCH_SSH_DIR:-/root/.ssh}:/ssh-source:ro
     expose:
       - "9080"
     healthcheck:
@@ -88,20 +87,20 @@ services:
         "/usr/local/bin/prepare_ssh_dir.sh /ssh-source /root/.ssh && python3 -m worker.main"
       ]
     environment:
-      RACKPATCH_DB_DSN: postgresql://ops:${RACKPATCH_DB_PASSWORD:-${OPS_DB_PASSWORD:-ops}}@db:5432/ops
+      RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
-      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-${OPS_SITE_NAME:-example}}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-${OPS_SITE_ROOT:-/workspace/sites/example}}
-      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-${OPS_ADMIN_USERNAME:-opsadmin}}
-      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-${OPS_ADMIN_PASSWORD:-change-me}}
-      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-${OPS_AUTH_SECRET:-change-me}}
-      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_AGENT_BOOTSTRAP_TOKEN:-${OPS_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}}
-      RACKPATCH_PUBLIC_BASE_URL: ${RACKPATCH_PUBLIC_BASE_URL:-${OPS_PUBLIC_BASE_URL:-http://YOUR-RACKPATCH-HOST:3011}}
-      RACKPATCH_PUBLIC_REPO_URL: ${RACKPATCH_PUBLIC_REPO_URL:-${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}}
-      RACKPATCH_PUBLIC_REPO_REF: ${RACKPATCH_PUBLIC_REPO_REF:-${OPS_PUBLIC_REPO_REF:-main}}
-      RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL: ${RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL:-${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}}
-      RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR:-${OPS_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch-agent}}
-      RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-${OPS_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}}
+      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
+      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
+      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
+      RACKPATCH_PUBLIC_BASE_URL: ${RACKPATCH_PUBLIC_BASE_URL:-http://YOUR-RACKPATCH-HOST:3011}
+      RACKPATCH_PUBLIC_REPO_URL: ${RACKPATCH_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
+      RACKPATCH_PUBLIC_REPO_REF: ${RACKPATCH_PUBLIC_REPO_REF:-main}
+      RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL: ${RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL:-}
+      RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch-agent}
+      RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
@@ -109,9 +108,9 @@ services:
     volumes:
       - .:/workspace
       - ./data:/data
-      - ${RACKPATCH_COMPOSE_ROOT:-${OPS_COMPOSE_ROOT:-/srv/compose}}:${RACKPATCH_COMPOSE_ROOT:-${OPS_COMPOSE_ROOT:-/srv/compose}}
+      - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${RACKPATCH_SSH_DIR:-${OPS_SSH_DIR:-/root/.ssh}}:/ssh-source:ro
+      - ${RACKPATCH_SSH_DIR:-/root/.ssh}:/ssh-source:ro
 
   web:
     build:
@@ -123,7 +122,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${RACKPATCH_HTTP_PORT:-${OPS_HTTP_PORT:-3011}}:3000"
+      - "${RACKPATCH_HTTP_PORT:-3011}:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
       interval: 30s
@@ -142,13 +141,13 @@ services:
     command: ["python3", "-m", "telegrambot.main"]
     environment:
       RACKPATCH_API_BASE: http://api:9080
-      RACKPATCH_DB_DSN: postgresql://ops:${RACKPATCH_DB_PASSWORD:-${OPS_DB_PASSWORD:-ops}}@db:5432/ops
+      RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
-      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-${OPS_SITE_NAME:-example}}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-${OPS_SITE_ROOT:-/workspace/sites/example}}
-      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-${OPS_ADMIN_USERNAME:-opsadmin}}
-      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-${OPS_ADMIN_PASSWORD:-change-me}}
-      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-${OPS_AUTH_SECRET:-change-me}}
+      RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
+      RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
+      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       TZ: ${TZ:-America/New_York}
@@ -169,15 +168,15 @@ services:
     command: ["uvicorn", "notify.main:app", "--host", "0.0.0.0", "--port", "9091"]
     environment:
       RACKPATCH_NOTIFY_PORT: 9091
-      RACKPATCH_DB_DSN: postgresql://ops:${RACKPATCH_DB_PASSWORD:-${OPS_DB_PASSWORD:-ops}}@db:5432/ops
-      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-${OPS_AUTH_SECRET:-change-me}}
+      RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
+      RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       TZ: ${TZ:-America/New_York}
     expose:
       - "9091"
     ports:
-      - "${RACKPATCH_NOTIFY_PORT:-${OPS_NOTIFY_PORT:-9091}}:9091"
+      - "${RACKPATCH_NOTIFY_PORT:-9091}:9091"
 
 networks:
   default:
@@ -185,4 +184,5 @@ networks:
 
 volumes:
   rackpatch-db-data:
-    name: ${RACKPATCH_DB_VOLUME:-${OPS_DB_VOLUME:-ops_ops-db-data}}
+    name: ${RACKPATCH_DB_VOLUME:-rackpatch-db-data}
+    external: ${RACKPATCH_DB_VOLUME_EXTERNAL:-false}

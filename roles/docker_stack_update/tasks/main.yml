@@ -144,7 +144,7 @@
 
 - name: Emit rollback artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=rollback stack={{ stack.name }} value={{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
+    msg: "RACKPATCH_ARTIFACT kind=rollback stack={{ stack.name }} value={{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
   when: not dry_run | default(false) | bool
 
 - name: Capture stack backup archive when requested
@@ -159,7 +159,7 @@
 
 - name: Emit backup archive artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
+    msg: "RACKPATCH_ARTIFACT kind=backup stack={{ stack.name }} value={{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
   when:
     - stack.backup_before | bool
     - not dry_run | default(false) | bool
@@ -193,7 +193,7 @@
 
 - name: Emit stack-specific backup artifact markers
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ item.path }}"
+    msg: "RACKPATCH_ARTIFACT kind=backup stack={{ stack.name }} value={{ item.path }}"
   loop: "{{ stack_backup_artifacts.files | default([]) }}"
   loop_control:
     label: "{{ item.path }}"

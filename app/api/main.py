@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -75,9 +76,16 @@ def _is_control_plane_host(host: dict[str, Any], base_identities: set[str]) -> b
 
 def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control_plane_host: bool) -> dict[str, str]:
     if agent:
+        host_maintenance = (agent.get("metadata") or {}).get("host_maintenance") or {}
+        actions = [str(item) for item in host_maintenance.get("actions", []) if str(item).strip()]
+        if actions:
+            action_labels = ", ".join(action.replace("_", " ") for action in actions)
+            detail = str(host_maintenance.get("detail") or f"Limited to approved maintenance actions: {action_labels}.")
+        else:
+            detail = str(host_maintenance.get("detail") or "Agent enrolled. Host maintenance helper not enabled.")
         return {
             "status": str(agent.get("status") or "unknown"),
-            "detail": str(agent.get("display_name") or agent.get("name") or "Agent enrolled"),
+            "detail": detail,
         }
     if control_plane_host:
         return {
@@ -87,6 +95,59 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
     return {
         "status": "Worker-routed",
         "detail": "Agent optional. Worker and inventory jobs still available.",
+    }
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _backup_file_candidates(item: dict[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    metadata = item.get("metadata") or {}
+    container_path = str(metadata.get("container_path") or "").strip()
+    if container_path:
+        candidates.append(Path(container_path))
+
+    raw_path = str(item.get("path") or "").strip()
+    if raw_path:
+        raw_candidate = Path(raw_path)
+        if raw_candidate.is_absolute():
+            candidates.append(raw_candidate)
+        else:
+            trimmed = raw_path[5:] if raw_path.startswith("data/") else raw_path
+            candidates.append(config.DATA_ROOT / trimmed)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(resolved)
+    return deduped
+
+
+def _backup_details(item: dict[str, Any]) -> dict[str, Any]:
+    candidates = _backup_file_candidates(item)
+    existing_file = next((path for path in candidates if path.is_file()), None)
+    preferred_path = existing_file or (candidates[0] if candidates else None)
+    backup_root = config.BACKUPS_ROOT.resolve(strict=False)
+    within_backups_root = bool(preferred_path and _is_relative_to(preferred_path, backup_root))
+    size_bytes = existing_file.stat().st_size if existing_file else None
+    display_name = preferred_path.name if preferred_path else Path(str(item.get("path") or "")).name
+    return {
+        "resolved_path": str(preferred_path) if preferred_path else "",
+        "file_name": display_name or str(item.get("target_ref") or ""),
+        "exists": bool(existing_file),
+        "size_bytes": size_bytes,
+        "delete_supported": bool(existing_file and within_backups_root),
     }
 
 
@@ -137,6 +198,10 @@ def _settings_payload() -> dict[str, Any]:
         "telegram": telegram_settings,
         "default_agent_bootstrap_token": bootstrap_token,
         "agent_install": control_plane.build_agent_install_commands(public_settings, bootstrap_token),
+        "agent_host_maintenance": control_plane.build_agent_host_maintenance_commands(
+            public_settings,
+            str(public_settings.get("repo_ref") or config.PUBLIC_REPO_REF),
+        ),
         "release": releases.build_release_status(public_settings, agents),
     }
 
@@ -204,7 +269,11 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     known_agents = {
         row["name"]: row
         for row in db.fetch_all(
-            "SELECT id, name, display_name, status, capabilities, last_seen_at FROM agents ORDER BY name"
+            """
+            SELECT id, name, display_name, status, capabilities, metadata, last_seen_at
+            FROM agents
+            ORDER BY name
+            """
         )
     }
     items = []
@@ -339,10 +408,59 @@ def cancel(job_id: str, username: str = Depends(auth.require_user)) -> dict[str,
 @app.get("/api/v1/backups")
 def list_backups(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
+    items = db.fetch_all(
+        "SELECT id, job_id, kind, target_ref, path, metadata, created_at FROM backups ORDER BY created_at DESC"
+    )
     return {
-        "items": db.fetch_all(
-            "SELECT id, job_id, kind, target_ref, path, metadata, created_at FROM backups ORDER BY created_at DESC"
+        "items": [{**item, **_backup_details(item)} for item in items]
+    }
+
+
+@app.delete("/api/v1/backups/{backup_id}")
+def delete_backup(backup_id: str, username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    row = db.fetch_one(
+        "SELECT id, job_id, kind, target_ref, path, metadata, created_at FROM backups WHERE id = %s",
+        (backup_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="backup not found")
+
+    details = _backup_details(row)
+    resolved_path = str(details.get("resolved_path") or "")
+    file_deleted = False
+    delete_reason = ""
+
+    if resolved_path and details.get("delete_supported"):
+        other_rows = db.fetch_all(
+            "SELECT id, job_id, kind, target_ref, path, metadata, created_at FROM backups WHERE id <> %s",
+            (backup_id,),
         )
+        shared_reference = any(_backup_details(item).get("resolved_path") == resolved_path for item in other_rows)
+        if shared_reference:
+            delete_reason = "file is still referenced by another backup record"
+        else:
+            try:
+                Path(resolved_path).unlink()
+                file_deleted = True
+            except FileNotFoundError:
+                delete_reason = "artifact file was already missing"
+    elif resolved_path:
+        delete_reason = "artifact file is outside the managed backups directory"
+    else:
+        delete_reason = "artifact file path is unavailable"
+
+    with db.db_cursor() as cur:
+        cur.execute("DELETE FROM backups WHERE id = %s RETURNING id", (backup_id,))
+        deleted = cur.fetchone()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="backup not found")
+
+    return {
+        "id": backup_id,
+        "file_deleted": file_deleted,
+        "delete_reason": delete_reason,
+        "resolved_path": resolved_path,
     }
 
 
@@ -459,9 +577,9 @@ def create_agent_token(payload: dict[str, Any], username: str = Depends(auth.req
 @app.post("/api/v1/agents/register")
 def register_agent(
     payload: dict[str, Any],
-    x_ops_agent_token: str | None = Header(default=None),
+    x_rackpatch_agent_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    token = x_ops_agent_token or str(payload.get("bootstrap_token", ""))
+    token = x_rackpatch_agent_token or str(payload.get("bootstrap_token", ""))
     token_hash = auth.hash_token(token)
     token_row = db.fetch_one(
         "SELECT id FROM agent_tokens WHERE token_hash = %s AND revoked_at IS NULL",
@@ -521,10 +639,10 @@ def register_agent(
 @app.post("/api/v1/agents/heartbeat")
 def heartbeat(
     payload: dict[str, Any],
-    x_ops_agent_secret: str | None = Header(default=None),
+    x_rackpatch_agent_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
     agent_id = str(payload.get("agent_id", ""))
-    _validate_agent_secret(agent_id, x_ops_agent_secret)
+    _validate_agent_secret(agent_id, x_rackpatch_agent_secret)
     with db.db_cursor() as cur:
         cur.execute(
             """
@@ -547,10 +665,10 @@ def heartbeat(
 @app.post("/api/v1/agents/claim")
 def claim(
     payload: dict[str, Any],
-    x_ops_agent_secret: str | None = Header(default=None),
+    x_rackpatch_agent_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
     agent_id = str(payload.get("agent_id", ""))
-    _validate_agent_secret(agent_id, x_ops_agent_secret)
+    _validate_agent_secret(agent_id, x_rackpatch_agent_secret)
     with db.db_cursor() as cur:
         cur.execute(
             """
@@ -583,10 +701,10 @@ def claim(
 def post_job_event(
     job_id: str,
     payload: dict[str, Any],
-    x_ops_agent_secret: str | None = Header(default=None),
+    x_rackpatch_agent_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
     agent_id = str(payload.get("agent_id", ""))
-    _validate_agent_secret(agent_id, x_ops_agent_secret)
+    _validate_agent_secret(agent_id, x_rackpatch_agent_secret)
     row = db.fetch_one("SELECT target_agent_id FROM jobs WHERE id = %s", (job_id,))
     if not row or str(row["target_agent_id"]) != agent_id:
         raise HTTPException(status_code=403, detail="job is not owned by this agent")
@@ -598,10 +716,10 @@ def post_job_event(
 def complete_job(
     job_id: str,
     payload: dict[str, Any],
-    x_ops_agent_secret: str | None = Header(default=None),
+    x_rackpatch_agent_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
     agent_id = str(payload.get("agent_id", ""))
-    _validate_agent_secret(agent_id, x_ops_agent_secret)
+    _validate_agent_secret(agent_id, x_rackpatch_agent_secret)
     row = db.fetch_one("SELECT target_agent_id FROM jobs WHERE id = %s", (job_id,))
     if not row or str(row["target_agent_id"]) != agent_id:
         raise HTTPException(status_code=403, detail="job is not owned by this agent")

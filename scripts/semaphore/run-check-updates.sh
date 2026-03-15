@@ -4,8 +4,8 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-window="${OPS_CHECK_WINDOW:-all}"
-selected_stacks="${OPS_SELECTED_STACKS:-}"
+window="${RACKPATCH_CHECK_WINDOW:-all}"
+selected_stacks="${RACKPATCH_SELECTED_STACKS:-}"
 report_file="$(mktemp)"
 trap 'rm -f "${report_file}"' EXIT
 

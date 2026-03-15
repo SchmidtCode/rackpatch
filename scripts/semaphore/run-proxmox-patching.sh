@@ -4,8 +4,8 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-dry_run="${OPS_DRY_RUN:-true}"
-target_limit="${OPS_PROXMOX_LIMIT:-proxmox_nodes}"
+dry_run="${RACKPATCH_DRY_RUN:-true}"
+target_limit="${RACKPATCH_PROXMOX_LIMIT:-proxmox_nodes}"
 
 log_section "Proxmox Node Patching"
 printf '[%s] dry_run=%s\n' "$(timestamp)" "${dry_run}"
@@ -17,7 +17,7 @@ run_locked_cmd ansible-playbook \
   -e "dry_run=${dry_run}"
 
 if [[ "${target_limit}" == "proxmox_nodes" || "${target_limit}" == "proxmox" ]]; then
-  OPS_PACKAGE_SCOPE=proxmox /workspace/scripts/semaphore/run-check-packages.sh
+  RACKPATCH_PACKAGE_SCOPE=proxmox /workspace/scripts/semaphore/run-check-packages.sh
 else
-  OPS_PACKAGE_HOSTS="${target_limit}" /workspace/scripts/semaphore/run-check-packages.sh
+  RACKPATCH_PACKAGE_HOSTS="${target_limit}" /workspace/scripts/semaphore/run-check-packages.sh
 fi

@@ -140,7 +140,10 @@ def execute_job(job: dict) -> None:
 
 def main() -> int:
     db.init_db()
+    recovered = jobs.recover_stale_worker_jobs()
     print("rackpatch-worker started", flush=True)
+    if recovered:
+        print(f"rackpatch-worker recovered {len(recovered)} stale worker job(s)", flush=True)
     schedule_tick = 0.0
     while True:
         now_monotonic = time.monotonic()

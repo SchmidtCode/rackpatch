@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 
-OPS_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(OPS_ROOT / "app"))
+RACKPATCH_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import stack_catalog  # noqa: E402
 

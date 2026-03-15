@@ -4,8 +4,6 @@ rackpatch is a compose-first homelab maintenance appliance for Docker stacks, De
 
 Version in this repo: `v0.2.1`
 
-New installs should use `RACKPATCH_*` environment variables. Legacy `OPS_*` aliases are still accepted so existing deployments can upgrade in place.
-
 ## What rackpatch does
 
 - Tracks Docker stacks from your site catalog and discovered compose projects.
@@ -45,10 +43,17 @@ The UI is available at `http://<host>:3011`.
 
 Default bootstrap login:
 
-- Username: value of `RACKPATCH_ADMIN_USERNAME` (default `opsadmin`)
+- Username: value of `RACKPATCH_ADMIN_USERNAME` (default `admin`)
 - Password: value of `RACKPATCH_ADMIN_PASSWORD`
 
-Fresh installs default to `RACKPATCH_DB_VOLUME=rackpatch-db-data`. Existing installs can keep their current DB volume name by setting `RACKPATCH_DB_VOLUME` or the legacy `OPS_DB_VOLUME`.
+Fresh installs default to `RACKPATCH_DB_VOLUME=rackpatch-db-data` with `RACKPATCH_DB_VOLUME_EXTERNAL=false`.
+
+If you want to point rackpatch at a pre-created Docker volume, set both values explicitly:
+
+```bash
+RACKPATCH_DB_VOLUME=your-existing-volume
+RACKPATCH_DB_VOLUME_EXTERNAL=true
+```
 
 If `RACKPATCH_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootstrap token on first start and exposes it in `Settings`.
 
@@ -133,6 +138,8 @@ Agent packaging modes:
 
 Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeploying, so agent code changes are not skipped during updates.
 
+Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host package maintenance, run the dedicated helper enable script after the agent is installed.
+
 Example container install:
 
 ```bash
@@ -152,6 +159,28 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.2.1/script
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
   --ref v0.2.1
 ```
+
+Example host-maintenance enablement:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | bash -s -- \
+  --mode compose \
+  --compose-dir /srv/compose/rackpatch-agent \
+  --install-source https://github.com/SchmidtCode/rackpatch.git \
+  --install-ref main
+```
+
+The helper exposes only approved host-maintenance actions and is intended for package check and package patch in this rollout.
+
+## Trust-sensitive privileged actions
+
+- Base agent installs do not enable privileged host maintenance by default.
+- Privileged host maintenance is enabled only by the dedicated helper setup step.
+- The helper is limited to named maintenance actions such as package check and package patch.
+- The helper does not accept arbitrary shell, free-form commands, package names, or paths from the control plane.
+- Every future privileged action must have:
+  a named helper action, a dedicated root-owned wrapper, an explicit capability, and UI disclosure.
+- Docker socket access is still a separate trust-sensitive capability and will be hardened in a later phase.
 
 ## Release tracking and AI/API access
 

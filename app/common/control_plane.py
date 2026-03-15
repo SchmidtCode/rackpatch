@@ -51,6 +51,53 @@ def build_agent_install_commands(public_settings: dict[str, Any], token: str) ->
     }
 
 
+def build_agent_host_maintenance_command(
+    public_settings: dict[str, Any],
+    ref: str,
+    mode: str,
+    *,
+    compose_dir: str = "",
+    install_dir: str = "",
+) -> str:
+    script_url = config.derive_public_script_url(
+        public_settings["repo_url"],
+        ref,
+        "scripts/enable-agent-host-maintenance.sh",
+    )
+    if "example.invalid" in script_url:
+        return "# Configure a GitHub repo URL to generate rackpatch host-maintenance enable commands."
+    extra: list[str] = []
+    if mode == "compose":
+        extra = ["--compose-dir", compose_dir or public_settings["agent_compose_dir"]]
+    elif mode in {"container", "systemd"}:
+        extra = ["--install-dir", install_dir or "/opt/rackpatch-agent"]
+    command = [
+        "curl",
+        "-fsSL",
+        script_url,
+        "|",
+        "bash",
+        "-s",
+        "--",
+        "--mode",
+        mode,
+        "--install-source",
+        public_settings["repo_url"],
+        "--install-ref",
+        ref,
+        *extra,
+    ]
+    return " ".join(_shell_quote(part) if part != "|" else part for part in command)
+
+
+def build_agent_host_maintenance_commands(public_settings: dict[str, Any], ref: str) -> dict[str, str]:
+    return {
+        "compose": build_agent_host_maintenance_command(public_settings, ref, "compose"),
+        "container": build_agent_host_maintenance_command(public_settings, ref, "container"),
+        "systemd": build_agent_host_maintenance_command(public_settings, ref, "systemd"),
+    }
+
+
 def build_stack_update_command(public_settings: dict[str, Any], ref: str) -> str:
     script_url = config.derive_public_script_url(
         public_settings["repo_url"],

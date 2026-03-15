@@ -2,8 +2,8 @@
 set -euo pipefail
 
 rackpatch_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-default_site_root="${RACKPATCH_SITE_ROOT:-${OPS_SITE_ROOT:-${rackpatch_root}/sites/example}}"
-stacks_file="${RACKPATCH_STACKS_FILE:-${OPS_STACKS_FILE:-${default_site_root%/}/stacks.yml}}"
+default_site_root="${RACKPATCH_SITE_ROOT:-${rackpatch_root}/sites/example}"
+stacks_file="${RACKPATCH_STACKS_FILE:-${default_site_root%/}/stacks.yml}"
 
 python3 - <<'PY' "${stacks_file}" | while IFS= read -r root; do
 import sys

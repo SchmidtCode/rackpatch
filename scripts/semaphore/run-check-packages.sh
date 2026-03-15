@@ -4,8 +4,8 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-scope="${OPS_PACKAGE_SCOPE:-all}"
-selected_hosts="${OPS_PACKAGE_HOSTS:-}"
+scope="${RACKPATCH_PACKAGE_SCOPE:-all}"
+selected_hosts="${RACKPATCH_PACKAGE_HOSTS:-}"
 report_file="$(mktemp)"
 trap 'rm -f "${report_file}"' EXIT
 

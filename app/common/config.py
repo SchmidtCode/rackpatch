@@ -4,10 +4,9 @@ import os
 from pathlib import Path
 
 
-def env(name: str, default: str, *legacy_names: str) -> str:
-    for candidate in (name, *legacy_names):
-        if candidate in os.environ:
-            return os.environ[candidate]
+def env(name: str, default: str) -> str:
+    if name in os.environ:
+        return os.environ[name]
     return default
 
 
@@ -20,60 +19,36 @@ GITHUB_REPO_PREFIXES = (
     "git@github.com:",
 )
 
-API_HOST = env("RACKPATCH_API_HOST", "0.0.0.0", "OPS_API_HOST")
-API_PORT = int(env("RACKPATCH_API_PORT", "9080", "OPS_API_PORT"))
-NOTIFY_PORT = int(env("RACKPATCH_NOTIFY_PORT", "9091", "OPS_NOTIFY_PORT"))
+API_HOST = env("RACKPATCH_API_HOST", "0.0.0.0")
+API_PORT = int(env("RACKPATCH_API_PORT", "9080"))
+NOTIFY_PORT = int(env("RACKPATCH_NOTIFY_PORT", "9091"))
 
-DB_DSN = env("RACKPATCH_DB_DSN", "postgresql://ops:ops@db:5432/ops", "OPS_DB_DSN")
-DATA_ROOT = Path(env("RACKPATCH_DATA_ROOT", "/data", "OPS_DATA_ROOT"))
+DB_DSN = env("RACKPATCH_DB_DSN", "postgresql://rackpatch:change-me@db:5432/rackpatch")
+DATA_ROOT = Path(env("RACKPATCH_DATA_ROOT", "/data"))
 JOBS_ROOT = DATA_ROOT / "jobs"
 BACKUPS_ROOT = DATA_ROOT / "backups"
-SITE_ROOT = Path(env("RACKPATCH_SITE_ROOT", "/workspace/sites/example", "OPS_SITE_ROOT"))
-SITE_NAME = env("RACKPATCH_SITE_NAME", SITE_ROOT.name, "OPS_SITE_NAME")
+SITE_ROOT = Path(env("RACKPATCH_SITE_ROOT", "/workspace/sites/example"))
+SITE_NAME = env("RACKPATCH_SITE_NAME", SITE_ROOT.name)
 
-ADMIN_USERNAME = env("RACKPATCH_ADMIN_USERNAME", "opsadmin", "OPS_ADMIN_USERNAME")
-ADMIN_PASSWORD = env("RACKPATCH_ADMIN_PASSWORD", "change-me", "OPS_ADMIN_PASSWORD")
-AUTH_SECRET = env("RACKPATCH_AUTH_SECRET", "change-me-in-production", "OPS_AUTH_SECRET")
-DEFAULT_AGENT_BOOTSTRAP_TOKEN = env(
-    "RACKPATCH_AGENT_BOOTSTRAP_TOKEN",
-    "bootstrap-me",
-    "OPS_AGENT_BOOTSTRAP_TOKEN",
-)
-PUBLIC_BASE_URL = env(
-    "RACKPATCH_PUBLIC_BASE_URL",
-    "http://YOUR-RACKPATCH-HOST:3011",
-    "OPS_PUBLIC_BASE_URL",
-).rstrip("/")
-PUBLIC_REPO_URL = env(
-    "RACKPATCH_PUBLIC_REPO_URL",
-    "https://github.com/SchmidtCode/rackpatch.git",
-    "OPS_PUBLIC_REPO_URL",
-).rstrip("/")
-PUBLIC_REPO_REF = env("RACKPATCH_PUBLIC_REPO_REF", "main", "OPS_PUBLIC_REPO_REF")
-PUBLIC_INSTALL_SCRIPT_URL = env(
-    "RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL",
-    "",
-    "OPS_PUBLIC_INSTALL_SCRIPT_URL",
-).rstrip("/")
-PUBLIC_AGENT_COMPOSE_DIR = env(
-    "RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR",
-    "/srv/compose/rackpatch-agent",
-    "OPS_PUBLIC_AGENT_COMPOSE_DIR",
-).rstrip("/")
-PUBLIC_RACKPATCH_COMPOSE_DIR = env(
-    "RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR",
-    "/srv/compose/rackpatch",
-    "OPS_PUBLIC_RACKPATCH_COMPOSE_DIR",
-).rstrip("/")
+ADMIN_USERNAME = env("RACKPATCH_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = env("RACKPATCH_ADMIN_PASSWORD", "change-me")
+AUTH_SECRET = env("RACKPATCH_AUTH_SECRET", "change-me-in-production")
+DEFAULT_AGENT_BOOTSTRAP_TOKEN = env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "bootstrap-me")
+PUBLIC_BASE_URL = env("RACKPATCH_PUBLIC_BASE_URL", "http://YOUR-RACKPATCH-HOST:3011").rstrip("/")
+PUBLIC_REPO_URL = env("RACKPATCH_PUBLIC_REPO_URL", "https://github.com/SchmidtCode/rackpatch.git").rstrip("/")
+PUBLIC_REPO_REF = env("RACKPATCH_PUBLIC_REPO_REF", "main")
+PUBLIC_INSTALL_SCRIPT_URL = env("RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL", "").rstrip("/")
+PUBLIC_AGENT_COMPOSE_DIR = env("RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR", "/srv/compose/rackpatch-agent").rstrip("/")
+PUBLIC_RACKPATCH_COMPOSE_DIR = env("RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR", "/srv/compose/rackpatch").rstrip("/")
 CORS_ORIGINS = [
     item.strip()
-    for item in env("RACKPATCH_CORS_ORIGINS", "", "OPS_CORS_ORIGINS").split(",")
+    for item in env("RACKPATCH_CORS_ORIGINS", "").split(",")
     if item.strip()
 ]
 
-WORKER_POLL_SECONDS = float(env("RACKPATCH_WORKER_POLL_SECONDS", "5", "OPS_WORKER_POLL_SECONDS"))
-SCHEDULE_POLL_SECONDS = float(env("RACKPATCH_SCHEDULE_POLL_SECONDS", "20", "OPS_SCHEDULE_POLL_SECONDS"))
-AGENT_POLL_SECONDS = float(env("RACKPATCH_AGENT_POLL_SECONDS", "10", "OPS_AGENT_POLL_SECONDS"))
+WORKER_POLL_SECONDS = float(env("RACKPATCH_WORKER_POLL_SECONDS", "5"))
+SCHEDULE_POLL_SECONDS = float(env("RACKPATCH_SCHEDULE_POLL_SECONDS", "20"))
+AGENT_POLL_SECONDS = float(env("RACKPATCH_AGENT_POLL_SECONDS", "10"))
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_IDS = [

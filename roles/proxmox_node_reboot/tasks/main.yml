@@ -5,11 +5,11 @@
 
 - name: Build Proxmox reboot paths
   ansible.builtin.set_fact:
-    node_reboot_script_path: "/root/ops-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.sh"
-    node_reboot_log_path: "/var/log/ops-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.log"
-    node_reboot_completion_script_path: "/root/ops-node-reboot-complete-{{ node_reboot_stamp }}.sh"
-    node_reboot_completion_unit_name: "ops-node-reboot-complete-{{ node_reboot_stamp }}.service"
-    node_reboot_completion_unit_path: "/etc/systemd/system/ops-node-reboot-complete-{{ node_reboot_stamp }}.service"
+    node_reboot_script_path: "/root/rackpatch-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.sh"
+    node_reboot_log_path: "/var/log/rackpatch-node-reboot-{{ reboot_mode | default('soft') }}-{{ node_reboot_stamp }}.log"
+    node_reboot_completion_script_path: "/root/rackpatch-node-reboot-complete-{{ node_reboot_stamp }}.sh"
+    node_reboot_completion_unit_name: "rackpatch-node-reboot-complete-{{ node_reboot_stamp }}.service"
+    node_reboot_completion_unit_path: "/etc/systemd/system/rackpatch-node-reboot-complete-{{ node_reboot_stamp }}.service"
     node_reboot_expected_guest_ids: "{{ guest_ids | default(soft_reboot_guest_order | default([])) }}"
     node_reboot_notify_bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') | default('', true) }}"
     node_reboot_notify_chat_ids: "{{ (lookup('env', 'TELEGRAM_CHAT_IDS') | default('', true)).split(',') | map('trim') | reject('equalto', '') | list }}"
@@ -75,7 +75,7 @@
       #!/usr/bin/env bash
       set -euo pipefail
       exec >>{{ node_reboot_log_path | quote }} 2>&1
-      echo "[$(date --iso-8601=seconds)] hard reboot scheduled by ops-controller"
+      echo "[$(date --iso-8601=seconds)] hard reboot scheduled by rackpatch control plane"
       echo "[$(date --iso-8601=seconds)] warning: guests on {{ inventory_hostname }} will be hard-interrupted"
       echo "[$(date --iso-8601=seconds)] completion notifier unit={{ node_reboot_completion_unit_name }}"
       sleep 10
@@ -96,15 +96,15 @@
 
 - name: Emit reboot plan artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=reboot-plan stack={{ inventory_hostname }} value={{ node_reboot_script_path }}"
+    msg: "RACKPATCH_ARTIFACT kind=reboot-plan stack={{ inventory_hostname }} value={{ node_reboot_script_path }}"
 
 - name: Emit reboot log artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=reboot-log stack={{ inventory_hostname }} value={{ node_reboot_log_path }}"
+    msg: "RACKPATCH_ARTIFACT kind=reboot-log stack={{ inventory_hostname }} value={{ node_reboot_log_path }}"
 
 - name: Emit reboot completion unit artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=reboot-complete stack={{ inventory_hostname }} value={{ node_reboot_completion_unit_name }}"
+    msg: "RACKPATCH_ARTIFACT kind=reboot-complete stack={{ inventory_hostname }} value={{ node_reboot_completion_unit_name }}"
   when:
     - (node_reboot_notify_bot_token | length) > 0
     - (node_reboot_notify_chat_ids | length) > 0

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-INVENTORY_FILE = Path(os.environ.get("OPS_INVENTORY_FILE", "/workspace/inventory/hosts.yml"))
+INVENTORY_FILE = Path(os.environ.get("RACKPATCH_INVENTORY_FILE", "/workspace/inventory/hosts.yml"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,7 +78,7 @@ def build_group_map(inventory: dict) -> dict[str, list[str]]:
 def check_host(host: str, hostvars: dict, group_map: dict[str, list[str]]) -> dict:
     command = (
         "sh -lc 'apt list --upgradable 2>/dev/null | tail -n +2; "
-        "printf \"__OPS_REBOOT__=%s\\n\" \"$(test -f /var/run/reboot-required && echo yes || echo no)\"'"
+        "printf \"__RACKPATCH_REBOOT__=%s\\n\" \"$(test -f /var/run/reboot-required && echo yes || echo no)\"'"
     )
     result = subprocess.run(
         ["ansible", host, "-i", str(INVENTORY_FILE), "-m", "shell", "-a", command],
@@ -113,7 +113,7 @@ def check_host(host: str, hostvars: dict, group_map: dict[str, list[str]]) -> di
         line = line.strip()
         if not line:
             continue
-        if line.startswith("__OPS_REBOOT__="):
+        if line.startswith("__RACKPATCH_REBOOT__="):
             payload["reboot_required"] = line.split("=", 1)[1].strip().lower() == "yes"
             continue
         package_lines.append(line)

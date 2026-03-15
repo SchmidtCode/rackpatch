@@ -14,12 +14,26 @@
         - guest_patch_policy | default('managed') == 'manual'
         - not allow_manual_guest_targets
 
-    - name: Assert early-morning window for DNS-critical guest
-      ansible.builtin.assert:
-        that:
-          - execution_dry_run or allow_dns_critical_anytime or not (dns_critical | default(false)) or (lookup('pipe', 'TZ=' ~ maintenance_timezone ~ ' date +%H') | int < 7)
-        fail_msg: DNS-critical guest maintenance is restricted to early-morning hours.
+    - name: Report DNS-critical guest blocked outside the maintenance window
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          action: skipped-dns-window
+          reason: DNS-critical guest maintenance is restricted to early-morning hours.
+      when:
+        - not execution_dry_run
+        - not allow_dns_critical_anytime
+        - dns_critical | default(false)
+        - (lookup('pipe', 'TZ=' ~ maintenance_timezone ~ ' date +%H') | int) >= 7
       delegate_to: localhost
+
+    - name: Skip DNS-critical guest outside the maintenance window
+      ansible.builtin.meta: end_host
+      when:
+        - not execution_dry_run
+        - not allow_dns_critical_anytime
+        - dns_critical | default(false)
+        - (lookup('pipe', 'TZ=' ~ maintenance_timezone ~ ' date +%H') | int) >= 7
 
     - name: Snapshot guest before OS maintenance when required
       ansible.builtin.include_role:

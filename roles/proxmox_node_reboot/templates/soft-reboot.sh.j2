@@ -30,7 +30,7 @@ wait_for_lxc_stop() {
   return 1
 }
 
-log "soft reboot scheduled by ops-controller"
+log "soft reboot scheduled by rackpatch control plane"
 log "guest shutdown order: {{ (soft_reboot_guest_order | default([])) | join(' ') }}"
 log "completion notifier unit: {{ node_reboot_completion_unit_name }}"
 {% for vmid in soft_reboot_guest_order | default([]) %}

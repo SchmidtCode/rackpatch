@@ -25,7 +25,7 @@ def main() -> int:
     client.images.pull(args.image)
     current_container = None
     if Path("/.dockerenv").exists():
-        current_id = os.environ.get("OPS_CONTAINER_NAME")
+        current_id = os.environ.get("RACKPATCH_CONTAINER_NAME")
         if not current_id:
             hostname_file = Path("/etc/hostname")
             if hostname_file.exists():

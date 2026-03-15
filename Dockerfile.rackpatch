@@ -14,10 +14,10 @@ RUN apt-get update \
         sudo \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-ops.txt /tmp/requirements-ops.txt
+COPY requirements-rackpatch.txt /tmp/requirements-rackpatch.txt
 COPY requirements.yml /tmp/requirements.yml
 
-RUN pip install --no-cache-dir -r /tmp/requirements-ops.txt \
+RUN pip install --no-cache-dir -r /tmp/requirements-rackpatch.txt \
     ansible-core==2.18.3 \
     && ansible-galaxy collection install -r /tmp/requirements.yml
 

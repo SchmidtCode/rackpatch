@@ -16,24 +16,32 @@ import requests
 from common import config
 
 
-SERVER_URL = config.env("RACKPATCH_SERVER_URL", "http://localhost:9080", "OPS_SERVER_URL").rstrip("/")
-STATE_DIR = Path(config.env("RACKPATCH_AGENT_STATE_DIR", "/var/lib/rackpatch-agent", "OPS_AGENT_STATE_DIR"))
+SERVER_URL = config.env("RACKPATCH_SERVER_URL", "http://localhost:9080").rstrip("/")
+STATE_DIR = Path(config.env("RACKPATCH_AGENT_STATE_DIR", "/var/lib/rackpatch-agent"))
 STATE_FILE = STATE_DIR / "agent.json"
-BOOTSTRAP_TOKEN = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "", "OPS_AGENT_BOOTSTRAP_TOKEN")
-AGENT_NAME = config.env("RACKPATCH_AGENT_NAME", socket.gethostname(), "OPS_AGENT_NAME")
-DISPLAY_NAME = config.env("RACKPATCH_AGENT_DISPLAY_NAME", AGENT_NAME, "OPS_AGENT_DISPLAY_NAME")
-AGENT_MODE = config.env("RACKPATCH_AGENT_MODE", "systemd", "OPS_AGENT_MODE")
+BOOTSTRAP_TOKEN = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "")
+AGENT_NAME = config.env("RACKPATCH_AGENT_NAME", socket.gethostname())
+DISPLAY_NAME = config.env("RACKPATCH_AGENT_DISPLAY_NAME", AGENT_NAME)
+AGENT_MODE = config.env("RACKPATCH_AGENT_MODE", "systemd")
 AGENT_LABELS = [
     item.strip()
-    for item in config.env("RACKPATCH_AGENT_LABELS", "", "OPS_AGENT_LABELS").split(",")
+    for item in config.env("RACKPATCH_AGENT_LABELS", "").split(",")
     if item.strip()
 ]
-AGENT_VERSION = config.env("RACKPATCH_AGENT_VERSION", config.APP_VERSION, "OPS_AGENT_VERSION")
-AGENT_INSTALL_DIR = config.env("RACKPATCH_AGENT_INSTALL_DIR", "", "OPS_AGENT_INSTALL_DIR")
-AGENT_COMPOSE_DIR = config.env("RACKPATCH_AGENT_COMPOSE_DIR", "", "OPS_AGENT_COMPOSE_DIR")
-COMPOSE_DISCOVERY_TTL_SECONDS = int(
-    config.env("RACKPATCH_AGENT_COMPOSE_DISCOVERY_TTL", "300", "OPS_AGENT_COMPOSE_DISCOVERY_TTL")
-)
+AGENT_VERSION = config.env("RACKPATCH_AGENT_VERSION", config.APP_VERSION)
+AGENT_INSTALL_DIR = config.env("RACKPATCH_AGENT_INSTALL_DIR", "")
+AGENT_COMPOSE_DIR = config.env("RACKPATCH_AGENT_COMPOSE_DIR", "")
+COMPOSE_DISCOVERY_TTL_SECONDS = int(config.env("RACKPATCH_AGENT_COMPOSE_DISCOVERY_TTL", "300"))
+HOST_HELPER_SOCKET = config.env("RACKPATCH_HOST_HELPER_SOCKET", "/run/rackpatch-host-helper.sock")
+
+HOST_MAINTENANCE_CAPABILITIES = {
+    "package_check": "host-package-check",
+    "package_patch": "host-package-patch",
+}
+LEGACY_HOST_CAPABILITY_ALIASES = {
+    "host-package-check": "package_check",
+    "host-package-patch": "sudo-packages",
+}
 
 _compose_discovery_cache: dict[str, Any] = {
     "captured_at": 0.0,
@@ -55,14 +63,89 @@ def save_state(payload: dict[str, Any]) -> None:
     STATE_FILE.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def clear_state() -> None:
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+
+
+def _helper_request(payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    socket_path = Path(HOST_HELPER_SOCKET)
+    if not socket_path.exists():
+        raise RuntimeError(f"host maintenance helper socket not found: {socket_path}")
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(timeout)
+    try:
+        client.connect(str(socket_path))
+        client.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+        client.shutdown(socket.SHUT_WR)
+        chunks: list[bytes] = []
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        client.close()
+
+    raw = b"".join(chunks).decode("utf-8").strip()
+    if not raw:
+        raise RuntimeError("host maintenance helper returned an empty response")
+    response = json.loads(raw)
+    if not isinstance(response, dict):
+        raise RuntimeError("host maintenance helper returned a non-object response")
+    return response
+
+
+def describe_host_helper() -> dict[str, Any] | None:
+    try:
+        response = _helper_request({"action": "describe"})
+    except Exception:  # noqa: BLE001
+        return None
+    if not response.get("ok"):
+        return None
+    return response
+
+
+def host_maintenance_actions() -> set[str]:
+    payload = describe_host_helper() or {}
+    return {str(item) for item in payload.get("actions", []) if str(item).strip()}
+
+
+def host_maintenance_metadata() -> dict[str, Any]:
+    payload = describe_host_helper() or {}
+    actions = sorted({str(item) for item in payload.get("actions", []) if str(item).strip()})
+    enabled = bool(actions)
+    detail = str(payload.get("detail") or "")
+    if not detail:
+        detail = (
+            "Limited to approved maintenance actions via the host helper."
+            if enabled
+            else "Host maintenance helper not enabled."
+        )
+    return {
+        "enabled": enabled,
+        "actions": actions,
+        "detail": detail,
+        "transport": "unix-socket" if enabled else "unavailable",
+        "socket_path": HOST_HELPER_SOCKET,
+    }
+
+
 def capabilities() -> list[str]:
-    caps = {"package_check"}
+    caps: set[str] = set()
     if shutil.which("docker"):
         caps.add("docker")
         caps.add("docker-exec")
         caps.add("docker-compose-discovery")
-    if shutil.which("sudo"):
-        caps.add("sudo-packages")
+    helper_actions = host_maintenance_actions()
+    for action, capability in HOST_MAINTENANCE_CAPABILITIES.items():
+        if action not in helper_actions:
+            continue
+        caps.add(capability)
+        legacy = LEGACY_HOST_CAPABILITY_ALIASES.get(capability)
+        if legacy:
+            caps.add(legacy)
     if Path("/etc/pve").exists():
         caps.add("proxmox")
     return sorted(caps)
@@ -71,7 +154,7 @@ def capabilities() -> list[str]:
 def register() -> dict[str, Any]:
     response = SESSION.post(
         f"{SERVER_URL}/api/v1/agents/register",
-        headers={"X-Ops-Agent-Token": BOOTSTRAP_TOKEN},
+        headers={"X-Rackpatch-Agent-Token": BOOTSTRAP_TOKEN},
         json={
             "name": AGENT_NAME,
             "display_name": DISPLAY_NAME,
@@ -110,7 +193,7 @@ def ensure_registered() -> dict[str, Any]:
 
 
 def agent_headers(state: dict[str, Any]) -> dict[str, str]:
-    return {"X-Ops-Agent-Secret": state["agent_secret"]}
+    return {"X-Rackpatch-Agent-Secret": state["agent_secret"]}
 
 
 def _run_json_command(command: list[str]) -> Any:
@@ -200,6 +283,7 @@ def heartbeat_metadata() -> dict[str, Any]:
     metadata = {
         "capabilities": capabilities(),
         "mode": AGENT_MODE,
+        "host_maintenance": host_maintenance_metadata(),
     }
     if AGENT_INSTALL_DIR:
         metadata["install_dir"] = AGENT_INSTALL_DIR
@@ -279,36 +363,24 @@ def run_command(command: list[str], cwd: str | None = None) -> tuple[int, str]:
     return process.wait(), "\n".join(output)
 
 
+def _result_from_helper(action: str, **payload: Any) -> dict[str, Any]:
+    response = _helper_request({"action": action, **payload}, timeout=120.0)
+    if not response.get("ok"):
+        message = str(response.get("error") or "host maintenance helper request failed")
+        stdout = str(response.get("stdout") or message)
+        return {"exit_code": 1, "error": message, "stdout": stdout}
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return {"exit_code": 1, "error": "host maintenance helper returned an invalid result", "stdout": ""}
+    return result
+
+
 def check_packages() -> dict[str, Any]:
-    rc, stdout = run_command(
-        [
-            "sh",
-            "-lc",
-            "apt list --upgradable 2>/dev/null | tail -n +2; "
-            "printf '__OPS_REBOOT__=%s\\n' \"$(test -f /var/run/reboot-required && echo yes || echo no)\"",
-        ]
-    )
-    packages = []
-    reboot_required = False
-    for line in stdout.splitlines():
-        if line.startswith("__OPS_REBOOT__="):
-            reboot_required = line.split("=", 1)[1] == "yes"
-        elif line.strip():
-            packages.append(line.strip())
-    return {"exit_code": rc, "packages": packages, "reboot_required": reboot_required, "stdout": stdout}
+    return _result_from_helper("package_check")
 
 
-def patch_packages() -> dict[str, Any]:
-    rc, stdout = run_command(
-        [
-            "sh",
-            "-lc",
-            "sudo apt-get update && "
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && "
-            "sudo apt-get autoremove -y",
-        ]
-    )
-    return {"exit_code": rc, "stdout": stdout}
+def patch_packages(payload: dict[str, Any]) -> dict[str, Any]:
+    return _result_from_helper("package_patch", dry_run=bool(payload.get("dry_run", False)))
 
 
 def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
@@ -335,7 +407,7 @@ def execute_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         status = "completed" if result["exit_code"] == 0 else "failed"
         return status, result
     if kind == "package_patch":
-        result = patch_packages()
+        result = patch_packages(payload)
         status = "completed" if result["exit_code"] == 0 else "failed"
         return status, result
     if kind == "docker_update":
@@ -361,6 +433,18 @@ def main() -> int:
                         post_event(state, job_id, line)
                 complete(state, job_id, status, result)
             time.sleep(float(state.get("poll_seconds", config.AGENT_POLL_SECONDS)))
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code in {401, 404}:
+                print(
+                    f"rackpatch-agent state rejected by server (status={status_code}); re-registering",
+                    flush=True,
+                )
+                clear_state()
+                state = register()
+                continue
+            print(f"rackpatch-agent loop error: {exc}", flush=True)
+            time.sleep(config.AGENT_POLL_SECONDS)
         except Exception as exc:  # noqa: BLE001
             print(f"rackpatch-agent loop error: {exc}", flush=True)
             time.sleep(config.AGENT_POLL_SECONDS)

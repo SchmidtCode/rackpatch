@@ -37,7 +37,7 @@
 
 - name: Reboot host when required and allowed
   ansible.builtin.reboot:
-    msg: Managed by ops-controller
+    msg: Managed by rackpatch control plane
     reboot_timeout: 1800
   when:
     - reboot_allowed | default(true)

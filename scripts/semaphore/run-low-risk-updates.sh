@@ -4,7 +4,7 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-dry_run="${OPS_DRY_RUN:-false}"
+dry_run="${RACKPATCH_DRY_RUN:-false}"
 
 log_section "Low-Risk Docker Window"
 printf '[%s] dry_run=%s\n' "$(timestamp)" "${dry_run}"
@@ -21,4 +21,4 @@ run_locked_cmd ansible-playbook \
   -e "target_window=auto-windowed" \
   -e "dry_run=${dry_run}"
 
-OPS_CHECK_WINDOW=auto-windowed /workspace/scripts/semaphore/run-check-updates.sh
+RACKPATCH_CHECK_WINDOW=auto-windowed /workspace/scripts/semaphore/run-check-updates.sh

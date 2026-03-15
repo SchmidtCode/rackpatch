@@ -4,8 +4,8 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-dry_run="${OPS_DRY_RUN:-true}"
-approved_services="${OPS_APPROVED_SERVICES:-[]}"
+dry_run="${RACKPATCH_DRY_RUN:-true}"
+approved_services="${RACKPATCH_APPROVED_SERVICES:-[]}"
 
 log_section "Approved Maintenance Window"
 printf '[%s] dry_run=%s\n' "$(timestamp)" "${dry_run}"

@@ -8,8 +8,8 @@ from pathlib import Path
 import yaml
 
 
-OPS_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(OPS_ROOT / "app"))
+RACKPATCH_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import site  # noqa: E402
 

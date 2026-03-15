@@ -6,8 +6,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-OPS_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(OPS_ROOT / "app"))
+RACKPATCH_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import site, stack_catalog  # noqa: E402
 

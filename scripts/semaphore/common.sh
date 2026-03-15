@@ -19,7 +19,7 @@ run_cmd() {
 }
 
 run_locked_cmd() {
-  local lock_file="${OPS_LOCK_FILE:-/workspace/state/ops-execution.lock}"
+  local lock_file="${RACKPATCH_LOCK_FILE:-/workspace/state/rackpatch-execution.lock}"
   local rc=0
   printf '[%s] RUN (locked) %s\n' "$(timestamp)" "$*"
   if (

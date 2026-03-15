@@ -16,10 +16,10 @@ def runtime_env() -> dict[str, str]:
         {
             "PYTHONUNBUFFERED": "1",
             "ANSIBLE_CONFIG": "/workspace/ansible.cfg",
-            "OPS_SITE_ROOT": str(site.site_root()),
-            "OPS_STACKS_FILE": str(site.stacks_path()),
-            "OPS_INVENTORY_FILE": str(site.inventory_path()),
-            "OPS_ROLLBACK_ROOT": str(group_vars.get("rollback_root", "/data/rollbacks")),
+            "RACKPATCH_SITE_ROOT": str(site.site_root()),
+            "RACKPATCH_STACKS_FILE": str(site.stacks_path()),
+            "RACKPATCH_INVENTORY_FILE": str(site.inventory_path()),
+            "RACKPATCH_ROLLBACK_ROOT": str(group_vars.get("rollback_root", "/data/rollbacks")),
         }
     )
     return env
@@ -48,9 +48,9 @@ def run_logged(job_id: str, command: list[str], cwd: str = "/workspace") -> dict
 def artifacts_from_output(output: str) -> list[dict[str, str]]:
     artifacts: list[dict[str, str]] = []
     for raw_line in output.splitlines():
-        if "OPS_ARTIFACT " not in raw_line:
+        if "RACKPATCH_ARTIFACT " not in raw_line:
             continue
-        line = raw_line.split("OPS_ARTIFACT ", 1)[1].strip().strip('"').strip(",")
+        line = raw_line.split("RACKPATCH_ARTIFACT ", 1)[1].strip().strip('"').strip(",")
         parts: dict[str, str] = {}
         for chunk in line.split():
             if "=" not in chunk:
@@ -109,7 +109,7 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
             "-i",
             inventory,
             "-e",
-            f"ops_stacks_file={stacks_file}",
+            f"rackpatch_stacks_file={stacks_file}",
             "-e",
             f"dry_run={dry_run}",
         ]

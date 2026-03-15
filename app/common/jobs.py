@@ -7,9 +7,10 @@ from typing import Any
 from common import config, db, job_catalog, notify, site
 
 
-# Route only lightweight read-only checks through agents. Update execution stays on the
-# worker path so stack backups, snapshots, and ordered playbooks are not bypassed.
-AGENT_JOB_KINDS = {"package_check"}
+# Route helper-backed host package operations through agents when the enrolled
+# host advertises the exact host-maintenance capability and the host does not
+# require worker-only policy handling.
+AGENT_JOB_KINDS = {"package_check", "package_patch"}
 APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
 VALID_EXECUTORS = {"worker", "agent", "auto"}
 CANCELLABLE_STATUSES = {"queued", "pending_approval"}
@@ -76,6 +77,49 @@ def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any])
     return None
 
 
+def _agent_capabilities(agent_id: str | None) -> set[str]:
+    if not agent_id:
+        return set()
+    row = db.fetch_one("SELECT capabilities FROM agents WHERE id = %s", (agent_id,))
+    values = (row or {}).get("capabilities") or []
+    return {str(value) for value in values if str(value).strip()}
+
+
+def _site_host(target_ref: str) -> dict[str, Any] | None:
+    for host in site.load_hosts():
+        if str(host.get("name")) == target_ref:
+            return host
+    return None
+
+
+def _package_patch_requires_worker(target_ref: str, payload: dict[str, Any]) -> bool:
+    host = _site_host(target_ref)
+    if not host:
+        return False
+    if str(host.get("guest_patch_policy", "managed")) == "manual":
+        return True
+    if str(host.get("snapshot_class", "none")) != "none":
+        return True
+    if bool(host.get("dns_critical")) and not bool(payload.get("dry_run", False)):
+        return True
+    return False
+
+
+def _agent_can_run_job(kind: str, target_ref: str, payload: dict[str, Any], agent_id: str | None) -> bool:
+    if not agent_id or kind not in AGENT_JOB_KINDS:
+        return False
+    if "," in target_ref:
+        return False
+    if kind == "package_patch" and _package_patch_requires_worker(target_ref, payload):
+        return False
+    capabilities = _agent_capabilities(agent_id)
+    required = {
+        "package_check": {"host-package-check"},
+        "package_patch": {"host-package-patch"},
+    }.get(kind, set())
+    return required.issubset(capabilities)
+
+
 def create_job(
     kind: str,
     target_type: str,
@@ -99,11 +143,13 @@ def create_job(
     target_agent_id = None
     if executor == "auto":
         target_agent_id = resolve_agent_id(target_type, target_ref, payload)
-        executor = "agent" if target_agent_id and kind in AGENT_JOB_KINDS else "worker"
+        executor = "agent" if _agent_can_run_job(kind, target_ref, payload, target_agent_id) else "worker"
     elif executor == "agent":
         target_agent_id = resolve_agent_id(target_type, target_ref, payload)
         if not target_agent_id:
             raise ValueError(f"no registered agent found for {target_ref}")
+        if not _agent_can_run_job(kind, target_ref, payload, target_agent_id):
+            raise ValueError(f"agent for {target_ref} does not support {kind}")
 
     status = "pending_approval" if requires_approval else "queued"
     approval_status = "pending" if requires_approval else "not_required"
@@ -186,3 +232,30 @@ def approve_job(job_id: str, username: str) -> dict[str, Any] | None:
         append_event(job_id, f"[{now_iso()}] job approved by {username}")
         notify.send_job_event(job, "approved")
     return job
+
+
+def recover_stale_worker_jobs() -> list[dict[str, Any]]:
+    recovery_result = {
+        "error": "worker restarted before job completion",
+        "recovered_by": "worker_startup",
+        "recovered_at": now_iso(),
+    }
+    with db.db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs
+            SET status = 'failed',
+                result = COALESCE(result, '{}'::jsonb) || %s::jsonb,
+                finished_at = NOW()
+            WHERE executor = 'worker'
+              AND status = 'running'
+            RETURNING *
+            """,
+            (json.dumps(recovery_result),),
+        )
+        recovered = list(cur.fetchall())
+
+    for job in recovered:
+        append_event(str(job["id"]), f"[{now_iso()}] worker startup marked interrupted job as failed")
+        notify.send_job_event(job, "failed", job.get("result") or recovery_result)
+    return recovered

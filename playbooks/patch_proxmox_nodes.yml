@@ -49,7 +49,7 @@
 
     - name: Emit Proxmox backup artifact marker
       ansible.builtin.debug:
-        msg: "OPS_ARTIFACT kind=backup stack={{ inventory_hostname }} value={{ backup_root }}/{{ proxmox_config_backup_name }}"
+        msg: "RACKPATCH_ARTIFACT kind=backup stack={{ inventory_hostname }} value={{ backup_root }}/{{ proxmox_config_backup_name }}"
       when: not execution_dry_run
 
   roles:

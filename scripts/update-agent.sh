@@ -81,6 +81,7 @@ resolve_source() {
 }
 
 src_root="$(resolve_source)"
+compose_override_name="compose.host-maintenance.yml"
 
 case "${mode}" in
   compose)
@@ -88,8 +89,12 @@ case "${mode}" in
     rm -rf "${compose_dir}/src/app"
     cp -R "${src_root}/app" "${compose_dir}/src/app"
     cp "${src_root}/Dockerfile.agent" "${compose_dir}/src/Dockerfile.agent"
-    cp "${src_root}/requirements-ops.txt" "${compose_dir}/src/requirements-ops.txt"
-    docker compose -f "${compose_dir}/compose.yml" up -d --build
+    cp "${src_root}/requirements-rackpatch.txt" "${compose_dir}/src/requirements-rackpatch.txt"
+    compose_args=(-f "${compose_dir}/compose.yml")
+    if [[ -f "${compose_dir}/${compose_override_name}" ]]; then
+      compose_args+=(-f "${compose_dir}/${compose_override_name}")
+    fi
+    docker compose "${compose_args[@]}" up -d --build
     echo "rackpatch agent updated in compose mode under ${compose_dir}"
     ;;
   container)
@@ -97,17 +102,24 @@ case "${mode}" in
     rm -rf "${install_dir}/src/app"
     cp -R "${src_root}/app" "${install_dir}/src/app"
     cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
-    cp "${src_root}/requirements-ops.txt" "${install_dir}/src/requirements-ops.txt"
+    cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/src/requirements-rackpatch.txt"
     docker build -t rackpatch-agent:local -f "${install_dir}/src/Dockerfile.agent" "${install_dir}/src"
-    docker compose -f "${install_dir}/compose.yml" up -d
+    compose_args=(-f "${install_dir}/compose.yml")
+    if [[ -f "${install_dir}/${compose_override_name}" ]]; then
+      compose_args+=(-f "${install_dir}/${compose_override_name}")
+    fi
+    docker compose "${compose_args[@]}" up -d
     echo "rackpatch agent updated in container mode under ${install_dir}"
     ;;
   systemd)
     mkdir -p "${install_dir}"
     rm -rf "${install_dir}/app"
     cp -R "${src_root}/app" "${install_dir}/app"
-    cp "${src_root}/requirements-ops.txt" "${install_dir}/requirements-ops.txt"
-    "${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-ops.txt"
+    cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/requirements-rackpatch.txt"
+    "${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-rackpatch.txt"
+    if id -u rackpatch-agent >/dev/null 2>&1; then
+      chown -R rackpatch-agent:rackpatch-agent "${install_dir}/app" "${install_dir}/requirements-rackpatch.txt"
+    fi
     systemctl restart rackpatch-agent.service
     echo "rackpatch agent updated in systemd mode under ${install_dir}"
     ;;

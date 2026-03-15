@@ -4,8 +4,8 @@ set -euo pipefail
 
 source /workspace/scripts/semaphore/common.sh
 
-dry_run="${OPS_DRY_RUN:-true}"
-selected_stacks="${OPS_SELECTED_STACKS:-[]}"
+dry_run="${RACKPATCH_DRY_RUN:-true}"
+selected_stacks="${RACKPATCH_SELECTED_STACKS:-[]}"
 
 log_section "Approved Docker Window"
 printf '[%s] dry_run=%s\n' "$(timestamp)" "${dry_run}"
@@ -44,7 +44,7 @@ PY
 )"
 
 if [[ -n "${normalized_stacks}" ]]; then
-  OPS_SELECTED_STACKS="${normalized_stacks}" OPS_CHECK_WINDOW=approve /workspace/scripts/semaphore/run-check-updates.sh
+  RACKPATCH_SELECTED_STACKS="${normalized_stacks}" RACKPATCH_CHECK_WINDOW=approve /workspace/scripts/semaphore/run-check-updates.sh
 else
-  OPS_CHECK_WINDOW=approve /workspace/scripts/semaphore/run-check-updates.sh
+  RACKPATCH_CHECK_WINDOW=approve /workspace/scripts/semaphore/run-check-updates.sh
 fi

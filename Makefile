@@ -2,7 +2,7 @@ SHELL := /bin/bash
 DC := docker compose
 EXEC := $(DC) exec -T api
 
-.PHONY: up build logs shell worker-logs backup-legacy rollback validate release-check check-updates check-packages agent-install
+.PHONY: up build logs shell worker-logs rollback validate release-check check-updates check-packages agent-install
 
 up:
 	$(DC) up -d --build --remove-orphans
@@ -18,9 +18,6 @@ shell:
 
 worker-logs:
 	$(DC) logs -f worker
-
-backup-legacy:
-	./scripts/backup_legacy_stack.sh
 
 rollback:
 	$(EXEC) python3 scripts/rollback_stack.py --stack $(STACK)

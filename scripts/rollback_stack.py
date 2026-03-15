@@ -8,14 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-OPS_ROOT = Path("/workspace")
-sys.path.insert(0, str(OPS_ROOT / "app"))
+RACKPATCH_ROOT = Path("/workspace")
+sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import stack_catalog  # noqa: E402
 
 
-INVENTORY_FILE = Path(os.environ.get("OPS_INVENTORY_FILE", OPS_ROOT / "inventory" / "hosts.yml"))
-ROLLBACK_ROOT = Path(os.environ.get("OPS_ROLLBACK_ROOT", "/data/rollbacks"))
+INVENTORY_FILE = Path(os.environ.get("RACKPATCH_INVENTORY_FILE", RACKPATCH_ROOT / "inventory" / "hosts.yml"))
+ROLLBACK_ROOT = Path(os.environ.get("RACKPATCH_ROLLBACK_ROOT", "/data/rollbacks"))
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1"}
 
 

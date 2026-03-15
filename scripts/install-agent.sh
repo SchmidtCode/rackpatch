@@ -18,6 +18,7 @@ labels=""
 install_source=""
 install_ref=""
 tmp_root=""
+systemd_agent_user="rackpatch-agent"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,6 +101,7 @@ resolve_source() {
 }
 
 src_root="$(resolve_source)"
+compose_override_name="compose.host-maintenance.yml"
 
 if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "systemd" ]]; then
   echo "unsupported mode: ${mode}" >&2
@@ -114,7 +116,7 @@ fi
   mkdir -p "${install_dir}/src"
   cp -R "${src_root}/app" "${install_dir}/src/app"
   cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
-  cp "${src_root}/requirements-ops.txt" "${install_dir}/src/requirements-ops.txt"
+  cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/src/requirements-rackpatch.txt"
   cat > "${install_dir}/compose.yml" <<EOF
 services:
   rackpatch-agent:
@@ -136,7 +138,11 @@ services:
       - ./state:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
-  docker compose -f "${install_dir}/compose.yml" up -d --build
+  compose_args=(-f "${install_dir}/compose.yml")
+  if [[ -f "${install_dir}/${compose_override_name}" ]]; then
+    compose_args+=(-f "${install_dir}/${compose_override_name}")
+  fi
+  docker compose "${compose_args[@]}" up -d --build
   echo "compose agent installed under ${install_dir}"
   exit 0
 fi
@@ -148,7 +154,7 @@ if [[ "${mode}" == "container" ]]; then
   mkdir -p "${install_dir}/src"
   cp -R "${src_root}/app" "${install_dir}/src/app"
   cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
-  cp "${src_root}/requirements-ops.txt" "${install_dir}/src/requirements-ops.txt"
+  cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/src/requirements-rackpatch.txt"
   docker build -t rackpatch-agent:local -f "${install_dir}/src/Dockerfile.agent" "${install_dir}/src"
   cat > "${install_dir}/compose.yml" <<EOF
 services:
@@ -167,7 +173,11 @@ services:
       - /var/lib/rackpatch-agent:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
-  docker compose -f "${install_dir}/compose.yml" up -d
+  compose_args=(-f "${install_dir}/compose.yml")
+  if [[ -f "${install_dir}/${compose_override_name}" ]]; then
+    compose_args+=(-f "${install_dir}/${compose_override_name}")
+  fi
+  docker compose "${compose_args[@]}" up -d
   echo "container agent installed under ${install_dir}"
   exit 0
 fi
@@ -176,10 +186,22 @@ install_dir="/opt/rackpatch-agent"
 mkdir -p "${install_dir}"
 rm -rf "${install_dir}/app"
 cp -R "${src_root}/app" "${install_dir}/app"
-cp "${src_root}/requirements-ops.txt" "${install_dir}/requirements-ops.txt"
+cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/requirements-rackpatch.txt"
 python3 -m venv "${install_dir}/venv"
 "${install_dir}/venv/bin/pip" install --upgrade pip
-"${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-ops.txt"
+"${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-rackpatch.txt"
+existing_helper_socket=""
+if [[ -f "${install_dir}/env" ]]; then
+  existing_helper_socket="$(awk -F= '/^RACKPATCH_HOST_HELPER_SOCKET=/{print substr($0, index($0, "=")+1)}' "${install_dir}/env" | tail -n 1)"
+fi
+if ! id -u "${systemd_agent_user}" >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /var/lib/rackpatch-agent --shell /usr/sbin/nologin "${systemd_agent_user}"
+fi
+install -d -m 0755 /var/lib/rackpatch-agent
+chown -R "${systemd_agent_user}:${systemd_agent_user}" "${install_dir}" /var/lib/rackpatch-agent
+if getent group docker >/dev/null 2>&1; then
+  usermod -aG docker "${systemd_agent_user}" || true
+fi
 cat > "${install_dir}/env" <<EOF
 RACKPATCH_SERVER_URL=${server_url}
 RACKPATCH_AGENT_BOOTSTRAP_TOKEN=${bootstrap_token}
@@ -190,6 +212,9 @@ RACKPATCH_AGENT_STATE_DIR=/var/lib/rackpatch-agent
 RACKPATCH_AGENT_INSTALL_DIR=${install_dir}
 PYTHONPATH=${install_dir}/app
 EOF
+if [[ -n "${existing_helper_socket}" ]]; then
+  printf 'RACKPATCH_HOST_HELPER_SOCKET=%s\n' "${existing_helper_socket}" >> "${install_dir}/env"
+fi
 
 cat > /etc/systemd/system/rackpatch-agent.service <<'EOF'
 [Unit]
@@ -199,6 +224,8 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/opt/rackpatch-agent/env
+User=rackpatch-agent
+Group=rackpatch-agent
 ExecStart=/opt/rackpatch-agent/venv/bin/python -m agent.main
 Restart=always
 RestartSec=5

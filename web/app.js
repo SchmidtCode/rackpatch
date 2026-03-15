@@ -146,6 +146,24 @@ function formatTimestamp(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatBytes(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size < 0) {
+    return "n/a";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = size / 1024;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 function shortId(value) {
   return String(value || "").slice(0, 8);
 }
@@ -267,6 +285,19 @@ function formatDockerVersion(ref, short) {
     return shortLabel;
   }
   return "unknown";
+}
+
+function hostMaintenanceInfo(agent) {
+  const payload = agent?.metadata?.host_maintenance || {};
+  const actions = Array.isArray(payload.actions)
+    ? payload.actions.map((item) => String(item).replaceAll("_", " "))
+    : [];
+  const detail =
+    payload.detail ||
+    (actions.length
+      ? `Limited to approved maintenance actions: ${actions.join(", ")}.`
+      : "Host maintenance helper not enabled.");
+  return { actions, detail };
 }
 
 function buildJobResultMarkup(job) {
@@ -691,9 +722,20 @@ function renderInstallPreviews() {
     return;
   }
   const blocks = state.data.settings.agent_install || {};
+  const helperBlocks = state.data.settings.agent_host_maintenance || {};
   const selected = blocks[state.installPreviewMode] || blocks.compose || "";
-  document.getElementById("overview-install").textContent = selected;
-  document.getElementById("settings-install").textContent = selected;
+  const helper = helperBlocks[state.installPreviewMode] || helperBlocks.compose || "";
+  const preview = [
+    "# Base agent install",
+    selected,
+    "",
+    "# Optional: enable limited host maintenance",
+    helper,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  document.getElementById("overview-install").textContent = preview;
+  document.getElementById("settings-install").textContent = preview;
   document.querySelectorAll("[data-install-mode]").forEach((node) => {
     node.classList.toggle("active", node.dataset.installMode === state.installPreviewMode);
   });
@@ -841,8 +883,9 @@ function renderHosts() {
       const address = escapeHtml(item.ansible_host || "n/a");
       const agent = item.agent;
       const runtime = item.runtime || {};
+      const maintenance = hostMaintenanceInfo(agent);
       const agentCell = agent
-        ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span>`
+        ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span><span class="subline">${escapeHtml(maintenance.detail)}</span>`
         : `${statusBadge(runtime.status || "Worker-routed")}<span class="subline">${escapeHtml(runtime.detail || "Agent optional. Worker and inventory jobs still available.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
       const actionButtons = isProxmoxNode
@@ -877,8 +920,9 @@ function renderAgents() {
   renderTable(
     "agents-table",
     ["Agent", "Transport", "Platform", "Version", "Capabilities", "Last Seen"],
-    items.map(
-      (item) => `
+    items.map((item) => {
+      const maintenance = hostMaintenanceInfo(item);
+      return `
         <tr>
           <td>
             <strong>${escapeHtml(item.display_name)}</strong>
@@ -894,11 +938,14 @@ function renderAgents() {
             <span class="subline mono">${escapeHtml(item.version || "unknown")}</span>
             <span class="subline">${escapeHtml(item.update_mode || "unknown")}</span>
           </td>
-          <td>${escapeHtml((item.capabilities || []).join(", ") || "none")}</td>
+          <td>
+            ${escapeHtml((item.capabilities || []).join(", ") || "none")}
+            <span class="subline">${escapeHtml(maintenance.detail)}</span>
+          </td>
           <td>${escapeHtml(formatTimestamp(item.last_seen_at))}</td>
         </tr>
-      `
-    ),
+      `;
+    }),
     "No agents registered."
   );
 }
@@ -1014,14 +1061,30 @@ function renderBackups() {
   const items = state.data.backups.items;
   renderTable(
     "backups-table",
-    ["Kind", "Target", "Path", "Created"],
+    ["Kind", "Target", "File", "Size", "Created", "Action"],
     items.map(
       (item) => `
         <tr>
           <td>${badge(item.kind, "accent")}</td>
           <td>${escapeHtml(item.target_ref)}</td>
-          <td><span class="path-pill mono" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span></td>
+          <td>
+            <strong>${escapeHtml(item.file_name || item.path || item.target_ref)}</strong>
+            <span class="subline">${item.exists ? "Present" : "Missing or virtual artifact"}</span>
+            <span class="path-pill mono" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
+          </td>
+          <td>${escapeHtml(formatBytes(item.size_bytes))}</td>
           <td>${escapeHtml(formatTimestamp(item.created_at))}</td>
+          <td>
+            <div class="table-actions">
+              <button
+                class="${item.delete_supported ? "danger" : "secondary"}"
+                data-backup-delete="${escapeHtml(item.id)}"
+                data-backup-delete-supported="${item.delete_supported ? "true" : "false"}"
+              >
+                ${item.delete_supported ? "Delete" : "Remove"}
+              </button>
+            </div>
+          </td>
         </tr>
       `
     ),
@@ -1062,6 +1125,7 @@ function renderSettings() {
     `Public repo: ${settings.public.repo_url}@${settings.public.repo_ref}`,
     `Agent compose dir: ${settings.public.agent_compose_dir}`,
     `Rackpatch compose dir: ${settings.public.rackpatch_compose_dir}`,
+    `Host maintenance: opt-in via a limited helper command, not broad sudo.`,
   ].join("\n");
 
   document.getElementById("telegram-help").textContent = [
@@ -1233,6 +1297,24 @@ async function toggleSchedule(scheduleId, enabled) {
     body: JSON.stringify({ enabled }),
   });
   showFlash(`${enabled ? "Enabled" : "Disabled"} schedule ${shortId(scheduleId)}.`);
+  await refreshDashboard();
+}
+
+async function deleteBackup(backupId, deleteSupported) {
+  const message = deleteSupported
+    ? "Delete this backup file and remove its record?"
+    : "Remove this backup record from the UI list?";
+  if (!window.confirm(message)) {
+    return;
+  }
+  const result = await api(`/api/v1/backups/${backupId}`, { method: "DELETE" });
+  if (result.file_deleted) {
+    showFlash(`Deleted backup ${shortId(backupId)}.`);
+  } else if (result.delete_reason) {
+    showFlash(`Removed backup ${shortId(backupId)} record (${result.delete_reason}).`);
+  } else {
+    showFlash(`Removed backup ${shortId(backupId)} record.`);
+  }
   await refreshDashboard();
 }
 
@@ -1566,6 +1648,15 @@ appScreen.addEventListener("click", async (event) => {
   const scheduleButton = event.target.closest("[data-schedule-id]");
   if (scheduleButton) {
     await toggleSchedule(scheduleButton.dataset.scheduleId, scheduleButton.dataset.scheduleEnabled === "true");
+    return;
+  }
+
+  const backupDeleteButton = event.target.closest("[data-backup-delete]");
+  if (backupDeleteButton) {
+    await deleteBackup(
+      backupDeleteButton.dataset.backupDelete,
+      backupDeleteButton.dataset.backupDeleteSupported === "true"
+    );
   }
 });
 

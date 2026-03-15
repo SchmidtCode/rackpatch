@@ -98,9 +98,8 @@ def random_token(prefix: str = "") -> str:
 
 
 def ensure_bootstrap_token() -> str:
-    token = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", config.DEFAULT_AGENT_BOOTSTRAP_TOKEN, "OPS_AGENT_BOOTSTRAP_TOKEN")
+    token = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", config.DEFAULT_AGENT_BOOTSTRAP_TOKEN)
     if not token or token == "bootstrap-me":
         token = f"rackpatch-bootstrap-{secrets.token_urlsafe(18)}"
         os.environ["RACKPATCH_AGENT_BOOTSTRAP_TOKEN"] = token
-        os.environ["OPS_AGENT_BOOTSTRAP_TOKEN"] = token
     return token
