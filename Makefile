@@ -24,8 +24,8 @@ rollback:
 
 validate:
 	./scripts/validate-policy.py
-	$(EXEC) python3 scripts/check_stack_updates.py --window all >/dev/null
-	$(EXEC) python3 scripts/check_package_updates.py --scope all >/dev/null
+	python3 -m compileall app scripts/host-maintenance >/dev/null
+	bash -n scripts/install-agent.sh scripts/update-agent.sh scripts/enable-agent-host-maintenance.sh
 
 release-check:
 	python3 scripts/release_check.py
@@ -34,7 +34,9 @@ check-updates:
 	$(EXEC) python3 scripts/check_stack_updates.py --window $(or $(WINDOW),all) $(if $(STACKS),--stack $(STACKS),)
 
 check-packages:
-	$(EXEC) python3 scripts/check_package_updates.py --scope $(or $(SCOPE),all) $(if $(HOSTS),--host $(HOSTS),)
+	@echo "check-packages is deprecated: package maintenance is agent/helper-backed now."
+	@echo "Use the web UI, Telegram, or POST /api/v1/jobs with kind=package_check against helper-enabled agents."
+	@exit 1
 
 agent-install:
 	./scripts/install-agent.sh --server-url $(SERVER_URL) --bootstrap-token $(BOOTSTRAP_TOKEN) --mode $(or $(MODE),container) $(if $(INSTALL_SOURCE),--install-source $(INSTALL_SOURCE),) $(if $(INSTALL_REF),--install-ref $(INSTALL_REF),)
