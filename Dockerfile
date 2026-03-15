@@ -22,11 +22,17 @@ RUN pip install --no-cache-dir \
     proxmoxer \
     requests
 
+COPY requirements-rackpatch.txt /tmp/requirements-rackpatch.txt
 COPY requirements.yml /tmp/requirements.yml
-RUN ansible-galaxy collection install -r /tmp/requirements.yml
+RUN pip install --no-cache-dir -r /tmp/requirements-rackpatch.txt \
+    ansible-core==2.18.3 \
+    && ansible-galaxy collection install -r /tmp/requirements.yml
 
 WORKDIR /workspace
-COPY api /opt/ops-api
+COPY app /opt/rackpatch-app
 COPY scripts/prepare_ssh_dir.sh /usr/local/bin/prepare_ssh_dir.sh
 
-CMD ["/opt/ops-api/start-controller.sh"]
+ENV PYTHONPATH=/opt/rackpatch-app \
+    PYTHONUNBUFFERED=1
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "9080"]

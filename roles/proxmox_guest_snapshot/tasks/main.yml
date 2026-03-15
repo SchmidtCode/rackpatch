@@ -43,4 +43,4 @@
 
 - name: Emit snapshot artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=snapshot stack={{ stack.name | default(snapshot_guest_host) }} value={{ proxmox_snapshot_name }}"
+    msg: "RACKPATCH_ARTIFACT kind=snapshot stack={{ stack.name | default(snapshot_guest_host) }} value={{ proxmox_snapshot_name }}"

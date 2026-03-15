@@ -6,6 +6,8 @@
 - name: Resolve stack project directory
   ansible.builtin.set_fact:
     stack_project_dir: "{{ stack.path | default(stack.project_dir) }}"
+    stack_execute_host: "{{ stack.host | default('localhost') }}"
+    stack_compose_env_files: "{{ stack.compose_env_files | default([]) }}"
 
 - name: Snapshot guest before risky stack update
   ansible.builtin.include_role:
@@ -40,14 +42,95 @@
   when: not dry_run | default(false) | bool
 
 - name: Capture rollback metadata before pull
-  ansible.builtin.shell: >-
-    python3 /workspace/scripts/capture_rollback.py
-    --stack-name {{ stack.name | quote }}
-    --stack-path {{ stack_project_dir | quote }}
-    --output {{ (rollback_root ~ '/' ~ stack.name ~ '/' ~ stack_update_stamp ~ '.json') | quote }}
-    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file | quote }}{% endfor %}
-  delegate_to: "{{ stack.host }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd {{ stack_project_dir | quote }}
+    python3 - <<'PY'
+    import json
+    import shutil
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    env_files = {{ stack_compose_env_files | to_json }}
+    stack_name = {{ stack.name | to_json }}
+    stack_path = {{ stack_project_dir | to_json }}
+    use_compose_wrapper = {{ 'True' if stack_execute_host in ['localhost', '127.0.0.1', ''] else 'False' }}
+
+    def compose_cmd(*args: str) -> list[str]:
+        wrapper = Path("/workspace/scripts/compose-wrapper.sh")
+        docker_bin = shutil.which("docker")
+        docker_compose_bin = shutil.which("docker-compose")
+        if use_compose_wrapper and wrapper.exists():
+            base = [str(wrapper)]
+        elif docker_bin and subprocess.run([docker_bin, "compose", "version"], capture_output=True, text=True, check=False).returncode == 0:
+            base = [docker_bin, "compose"]
+        elif docker_compose_bin:
+            base = [docker_compose_bin]
+        else:
+            raise SystemExit("docker compose command not available for rollback capture")
+        command = base[:]
+        for env_file in env_files:
+            command.extend(["--env-file", env_file])
+        command.extend(args)
+        return command
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, cwd=stack_path, text=True, capture_output=True, check=False)
+
+    config_result = run(compose_cmd("config", "--format", "json"))
+    if config_result.returncode != 0:
+        raise SystemExit(config_result.stderr or config_result.stdout or "compose config failed")
+    config = json.loads(config_result.stdout)
+
+    services = []
+    for service_name, service_def in config.get("services", {}).items():
+        image_ref = service_def.get("image", "")
+        container_result = run(compose_cmd("ps", "-q", service_name))
+        image_result = run(compose_cmd("images", "-q", service_name))
+        services.append(
+            {
+                "service": service_name,
+                "configured_image_ref": image_ref,
+                "container_id": container_result.stdout.strip(),
+                "image_id": image_result.stdout.strip() if image_result.returncode == 0 else "",
+            }
+        )
+
+    git_meta = {}
+    if (Path(stack_path) / ".git").exists():
+        head_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=stack_path, text=True, capture_output=True, check=False)
+        status_result = subprocess.run(
+            ["git", "status", "--short"], cwd=stack_path, text=True, capture_output=True, check=False
+        )
+        git_meta = {
+            "head": head_result.stdout.strip() if head_result.returncode == 0 else "",
+            "status": status_result.stdout.splitlines() if status_result.returncode == 0 else [],
+        }
+
+    payload = {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "stack_name": stack_name,
+        "stack_path": stack_path,
+        "env_files": env_files,
+        "git": git_meta,
+        "services": services,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    PY
+  args:
+    executable: /bin/bash
+  register: rollback_capture
+  delegate_to: "{{ stack_execute_host }}"
   changed_when: false
+  when: not dry_run | default(false) | bool
+
+- name: Save rollback metadata locally
+  ansible.builtin.copy:
+    content: "{{ rollback_capture.stdout | trim }}\n"
+    dest: "{{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
+    mode: '0644'
+  delegate_to: localhost
   when: not dry_run | default(false) | bool
 
 - name: Update latest rollback pointer
@@ -61,7 +144,7 @@
 
 - name: Emit rollback artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=rollback stack={{ stack.name }} value={{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
+    msg: "RACKPATCH_ARTIFACT kind=rollback stack={{ stack.name }} value={{ rollback_root }}/{{ stack.name }}/{{ stack_update_stamp }}.json"
   when: not dry_run | default(false) | bool
 
 - name: Capture stack backup archive when requested
@@ -69,14 +152,14 @@
     path: "{{ stack_project_dir }}"
     dest: "{{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
     format: gz
-  delegate_to: "{{ stack.host }}"
+  delegate_to: "{{ stack_execute_host }}"
   when:
     - stack.backup_before | bool
     - not dry_run | default(false) | bool
 
 - name: Emit backup archive artifact marker
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
+    msg: "RACKPATCH_ARTIFACT kind=backup stack={{ stack.name }} value={{ backup_root }}/{{ stack.name }}-{{ stack_update_stamp }}.tgz"
   when:
     - stack.backup_before | bool
     - not dry_run | default(false) | bool
@@ -88,7 +171,7 @@
   environment:
     BACKUP_ROOT: "{{ backup_root }}"
     STACK_UPDATE_STAMP: "{{ stack_update_stamp }}"
-  delegate_to: "{{ stack.host }}"
+  delegate_to: "{{ stack_execute_host }}"
   loop: "{{ stack.backup_commands | default([]) }}"
   loop_control:
     loop_var: backup_command
@@ -110,7 +193,7 @@
 
 - name: Emit stack-specific backup artifact markers
   ansible.builtin.debug:
-    msg: "OPS_ARTIFACT kind=backup stack={{ stack.name }} value={{ item.path }}"
+    msg: "RACKPATCH_ARTIFACT kind=backup stack={{ stack.name }} value={{ item.path }}"
   loop: "{{ stack_backup_artifacts.files | default([]) }}"
   loop_control:
     label: "{{ item.path }}"
@@ -119,13 +202,17 @@
     - not dry_run | default(false) | bool
 
 - name: Validate compose config
-  ansible.builtin.shell: >-
-    /workspace/scripts/compose-wrapper.sh
-    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
-    config
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd {{ stack_project_dir | quote }}
+    if docker compose version >/dev/null 2>&1; then
+      docker compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} config
+    else
+      docker-compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} config
+    fi
   args:
-    chdir: "{{ stack_project_dir }}"
-  delegate_to: "{{ stack.host }}"
+    executable: /bin/bash
+  delegate_to: "{{ stack_execute_host }}"
   changed_when: false
 
 - name: Report dry-run decision for stack
@@ -137,13 +224,17 @@
       action: "{{ 'validate-only' if (dry_run | default(false) | bool) else 'apply-update' }}"
 
 - name: Pull images for stack
-  ansible.builtin.shell: >-
-    /workspace/scripts/compose-wrapper.sh
-    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
-    pull
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd {{ stack_project_dir | quote }}
+    if docker compose version >/dev/null 2>&1; then
+      docker compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} pull
+    else
+      docker-compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} pull
+    fi
   args:
-    chdir: "{{ stack_project_dir }}"
-  delegate_to: "{{ stack.host }}"
+    executable: /bin/bash
+  delegate_to: "{{ stack_execute_host }}"
   register: stack_pull
   retries: 3
   delay: 15
@@ -151,13 +242,17 @@
   when: not dry_run | default(false) | bool
 
 - name: Recreate stack with current desired refs
-  ansible.builtin.shell: >-
-    /workspace/scripts/compose-wrapper.sh
-    {% for env_file in stack.compose_env_files | default([]) %} --env-file {{ env_file }}{% endfor %}
-    up -d
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd {{ stack_project_dir | quote }}
+    if docker compose version >/dev/null 2>&1; then
+      docker compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} up -d
+    else
+      docker-compose{% for env_file in stack_compose_env_files %} --env-file {{ env_file | quote }}{% endfor %} up -d
+    fi
   args:
-    chdir: "{{ stack_project_dir }}"
-  delegate_to: "{{ stack.host }}"
+    executable: /bin/bash
+  delegate_to: "{{ stack_execute_host }}"
   when: not dry_run | default(false) | bool
 
 - name: Run post-checks for stack
@@ -165,5 +260,5 @@
     name: postchecks
   vars:
     postcheck_target: "{{ stack.healthcheck }}"
-    postcheck_host: "{{ stack.host }}"
+    postcheck_host: "{{ stack_execute_host }}"
   when: not dry_run | default(false) | bool

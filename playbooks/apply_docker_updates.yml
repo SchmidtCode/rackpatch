@@ -4,27 +4,80 @@
   gather_facts: false
   vars:
     requested_target_window: "{{ target_window | default('approve') }}"
-    requested_selected_stacks: "{{ selected_stacks | default([]) }}"
+    requested_selected_stacks_raw: "{{ selected_stacks | default([]) }}"
     execution_dry_run: "{{ dry_run | default(false) | bool }}"
     backup_stamp: "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
   pre_tasks:
+    - name: Render merged stack catalog
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /workspace/scripts/render_stack_catalog.py
+      register: rendered_stack_catalog
+      changed_when: false
+
     - name: Load stack catalog
-      ansible.builtin.include_vars:
-        file: "{{ ops_stacks_file | default('../config/stacks.yml') }}"
-        name: stack_catalog
+      ansible.builtin.set_fact:
+        stack_catalog: "{{ rendered_stack_catalog.stdout | from_json }}"
 
     - name: Select stacks for this run
       ansible.builtin.set_fact:
         stacks_to_update: >-
           {{
-            stack_catalog.stacks
-            | selectattr('update_mode', 'equalto', requested_target_window)
-            | list
-            if (requested_selected_stacks | length) == 0
-            else
-            stack_catalog.stacks
-            | selectattr('name', 'in', requested_selected_stacks)
-            | list
+            (
+              stack_catalog.stacks | list
+              if (
+                (
+                  requested_selected_stacks_raw
+                  if requested_selected_stacks_raw is sequence and requested_selected_stacks_raw is not string
+                  else
+                  ((requested_selected_stacks_raw | string | trim) | from_yaml)
+                  if ((requested_selected_stacks_raw | string | trim).startswith('['))
+                  else
+                  [requested_selected_stacks_raw | string | trim]
+                  if (requested_selected_stacks_raw | string | trim)
+                  else
+                  []
+                ) | length
+              ) == 0 and requested_target_window == 'all'
+              else
+              stack_catalog.stacks
+              | selectattr('update_mode', 'equalto', requested_target_window)
+              | list
+              if (
+                (
+                  requested_selected_stacks_raw
+                  if requested_selected_stacks_raw is sequence and requested_selected_stacks_raw is not string
+                  else
+                  ((requested_selected_stacks_raw | string | trim) | from_yaml)
+                  if ((requested_selected_stacks_raw | string | trim).startswith('['))
+                  else
+                  [requested_selected_stacks_raw | string | trim]
+                  if (requested_selected_stacks_raw | string | trim)
+                  else
+                  []
+                ) | length
+              ) == 0
+              else
+              stack_catalog.stacks
+              | selectattr(
+                  'name',
+                  'in',
+                  (
+                    requested_selected_stacks_raw
+                    if requested_selected_stacks_raw is sequence and requested_selected_stacks_raw is not string
+                    else
+                    ((requested_selected_stacks_raw | string | trim) | from_yaml)
+                    if ((requested_selected_stacks_raw | string | trim).startswith('['))
+                    else
+                    [requested_selected_stacks_raw | string | trim]
+                    if (requested_selected_stacks_raw | string | trim)
+                    else
+                    []
+                  )
+                )
+              | list
+            )
           }}
 
     - name: Sort stacks by shutdown priority

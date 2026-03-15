@@ -12,3 +12,6 @@ venv
 .env.*
 !.env.example
 secrets/
+sites/*
+!sites/example/
+!sites/example/**

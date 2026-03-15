@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Print a concise summary for ops JSON reports.")
+    parser = argparse.ArgumentParser(description="Print a concise summary for rackpatch JSON reports.")
     parser.add_argument("--kind", choices=["docker", "package"], required=True)
     parser.add_argument("--input", required=True)
     return parser.parse_args()

@@ -34,7 +34,7 @@
           - -e
           - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
       args:
-        chdir: "{{ ops_root }}"
+        chdir: "{{ rackpatch_root }}"
       changed_when: false
       when: maintenance_first_guest in groups['docker_hosts']
 
@@ -48,7 +48,7 @@
           - -e
           - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
       args:
-        chdir: "{{ ops_root }}"
+        chdir: "{{ rackpatch_root }}"
       changed_when: false
       when: requested_approved_services | length > 0
 
@@ -62,5 +62,5 @@
           - -e
           - "dry_run={{ execution_dry_run | ternary('true', 'false') }}"
       args:
-        chdir: "{{ ops_root }}"
+        chdir: "{{ rackpatch_root }}"
       changed_when: false

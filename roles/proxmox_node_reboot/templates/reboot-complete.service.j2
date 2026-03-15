@@ -1,5 +1,5 @@
 [Unit]
-Description=Ops reboot completion notifier for {{ inventory_hostname }} {{ node_reboot_stamp }}
+Description=Rackpatch reboot completion notifier for {{ inventory_hostname }} {{ node_reboot_stamp }}
 Wants=network-online.target
 After=network-online.target pve-guests.service
 ConditionPathExists={{ node_reboot_completion_script_path }}

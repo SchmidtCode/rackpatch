@@ -1,5 +1,5 @@
 compose_root: /srv/compose
-ops_root: /workspace
+rackpatch_root: /workspace
 state_root: /data
 backup_root: /data/backups
 rollback_root: /data/rollbacks
@@ -19,4 +19,4 @@ proxmox:
   api_user: "{{ lookup('env', 'PROXMOX_API_USER') | default('root@pam', true) }}"
   api_token_id: "{{ lookup('env', 'PROXMOX_API_TOKEN_ID') | default('', true) }}"
   api_token_secret: "{{ lookup('env', 'PROXMOX_API_TOKEN_SECRET') | default('', true) }}"
-  snapshot_prefix: ops-preupdate
+  snapshot_prefix: rackpatch-preupdate

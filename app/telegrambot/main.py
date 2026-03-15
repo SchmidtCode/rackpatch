@@ -11,10 +11,15 @@ import requests
 from common import config, db, runtime_settings
 
 
-OPS_API_BASE = os.environ.get("OPS_API_BASE", "http://ops-api:9080").rstrip("/")
-OFFSET_FILE = Path(os.environ.get("OPS_TELEGRAM_OFFSET_FILE", str(config.DATA_ROOT / "telegram-offset.txt")))
-POLL_TIMEOUT = int(os.environ.get("OPS_TELEGRAM_POLL_TIMEOUT", "25"))
-IDLE_SLEEP_SECONDS = float(os.environ.get("OPS_TELEGRAM_IDLE_SLEEP", "5"))
+API_BASE = config.env("RACKPATCH_API_BASE", "http://api:9080").rstrip("/")
+OFFSET_FILE = Path(
+    config.env(
+        "RACKPATCH_TELEGRAM_OFFSET_FILE",
+        str(config.DATA_ROOT / "telegram-offset.txt"),
+    )
+)
+POLL_TIMEOUT = int(config.env("RACKPATCH_TELEGRAM_POLL_TIMEOUT", "25"))
+IDLE_SLEEP_SECONDS = float(config.env("RACKPATCH_TELEGRAM_IDLE_SLEEP", "5"))
 
 API_SESSION = requests.Session()
 API_SESSION.headers.update({"User-Agent": f"rackpatch-telegram/{config.APP_VERSION}"})
@@ -74,7 +79,7 @@ def ensure_api_token(force: bool = False) -> str:
     if STATE["api_token"] and not force:
         return STATE["api_token"]
     response = API_SESSION.post(
-        f"{OPS_API_BASE}/api/v1/auth/login",
+        f"{API_BASE}/api/v1/auth/login",
         json={
             "username": config.ADMIN_USERNAME,
             "password": config.ADMIN_PASSWORD,
@@ -90,7 +95,7 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None, *
     token = ensure_api_token()
     response = API_SESSION.request(
         method,
-        f"{OPS_API_BASE}{path}",
+        f"{API_BASE}{path}",
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -102,7 +107,7 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None, *
         token = ensure_api_token(force=True)
         response = API_SESSION.request(
             method,
-            f"{OPS_API_BASE}{path}",
+            f"{API_BASE}{path}",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -168,6 +173,24 @@ def queue_job(kind: str, target_type: str, target_ref: str, payload: dict[str, A
             "payload": payload,
         },
     )
+
+
+def queue_job_message(result: dict[str, Any], kind: str, target_ref: str) -> str:
+    queued_jobs = result.get("jobs") if isinstance(result.get("jobs"), list) else []
+    job_ids = result.get("job_ids") if isinstance(result.get("job_ids"), list) else []
+    skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+    if not result.get("fanout"):
+        return f"Queued {kind} job {result['id']} for {target_ref}."
+
+    queued_count = int(result.get("queued_count") or len(queued_jobs) or len(job_ids))
+    lines = [f"Queued {queued_count} {kind} job{'s' if queued_count != 1 else ''} for {target_ref}."]
+    if job_ids:
+        lines.append("jobs=" + ",".join(str(item)[:8] for item in job_ids))
+    for item in skipped[:6]:
+        lines.append(f"- skipped {item.get('target_ref', 'unknown')}: {item.get('reason', 'not eligible')}")
+    if len(skipped) > 6:
+        lines.append(f"- skipped +{len(skipped) - 6} more host(s)")
+    return "\n".join(lines)
 
 
 def format_jobs(items: list[dict[str, Any]], *, limit: int = 8) -> str:
@@ -282,7 +305,7 @@ def handle_discover(target: str) -> str:
     if target != "all":
         payload["stacks"] = [target]
     result = queue_job("docker_discover", "stack", target, payload)
-    return f"Queued docker discovery job {result['id']} for {target}."
+    return queue_job_message(result, "docker discovery", target)
 
 
 def handle_update(target: str, mode: str) -> str:
@@ -298,19 +321,19 @@ def handle_update(target: str, mode: str) -> str:
     else:
         payload["selected_stacks"] = [target]
     result = queue_job("docker_update", "stack", target, payload)
-    return f"Queued docker update job {result['id']} for {target} ({'dry-run' if dry_run else 'live'})."
+    return queue_job_message(result, f"docker update ({'dry-run' if dry_run else 'live'})", target)
 
 
 def handle_patch(target: str, mode: str) -> str:
     dry_run = mode != "live"
     payload: dict[str, Any] = {
-        "executor": "auto",
+        "executor": "agent",
         "dry_run": dry_run,
     }
     if dry_run:
         payload["requires_approval"] = False
     result = queue_job("package_patch", "host", target, payload)
-    return f"Queued package patch job {result['id']} for {target} ({'dry-run' if dry_run else 'live'})."
+    return queue_job_message(result, f"package patch ({'dry-run' if dry_run else 'live'})", target)
 
 
 def handle_snapshot(target: str) -> str:
@@ -323,7 +346,7 @@ def handle_snapshot(target: str) -> str:
             "requires_approval": False,
         },
     )
-    return f"Queued snapshot job {result['id']} for {target}."
+    return queue_job_message(result, "snapshot", target)
 
 
 def handle_proxmox_patch(target: str, mode: str) -> str:
@@ -336,7 +359,7 @@ def handle_proxmox_patch(target: str, mode: str) -> str:
     if dry_run:
         payload["requires_approval"] = False
     result = queue_job("proxmox_patch", "host", target, payload)
-    return f"Queued Proxmox patch job {result['id']} for {target} ({'dry-run' if dry_run else 'live'})."
+    return queue_job_message(result, f"Proxmox patch ({'dry-run' if dry_run else 'live'})", target)
 
 
 def handle_proxmox_reboot(target: str, mode: str) -> str:
@@ -349,13 +372,13 @@ def handle_proxmox_reboot(target: str, mode: str) -> str:
     if dry_run:
         payload["requires_approval"] = False
     result = queue_job("proxmox_reboot", "host", target, payload)
-    return f"Queued Proxmox reboot job {result['id']} for {target} ({'dry-run' if dry_run else 'live'})."
+    return queue_job_message(result, f"Proxmox reboot ({'dry-run' if dry_run else 'live'})", target)
 
 
 def handle_backup(target: str) -> str:
     result = queue_job(
         "backup",
-        "host",
+        "volume",
         target,
         {
             "executor": "worker",
@@ -363,12 +386,12 @@ def handle_backup(target: str) -> str:
             "requires_approval": False,
         },
     )
-    return f"Queued backup job {result['id']} for {target}."
+    return queue_job_message(result, "backup", target)
 
 
 def handle_rollback(target: str) -> str:
     result = queue_job("rollback", "stack", target, {"executor": "worker"})
-    return f"Queued rollback job {result['id']} for {target}."
+    return queue_job_message(result, "rollback", target)
 
 
 def handle_schedules() -> str:
@@ -396,7 +419,7 @@ def handle_generic_job(kind: str, target_type: str, target_ref: str, payload_tex
     if not isinstance(payload, dict):
         raise ValueError("job payload must be a JSON object")
     result = queue_job(kind, target_type, target_ref, payload)
-    return f"Queued {kind} job {result['id']} for {target_type}:{target_ref}."
+    return queue_job_message(result, kind, f"{target_type}:{target_ref}")
 
 
 def help_text() -> str:

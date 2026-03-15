@@ -45,7 +45,7 @@ def enqueue_schedules() -> None:
     for row in due:
         payload = dict(row["payload"] or {})
         payload.setdefault("executor", "auto")
-        if row["kind"] in {"docker_discover", "package_check"}:
+        if row["kind"] == "docker_discover":
             payload.setdefault("requires_approval", False)
         if row["kind"] == "docker_update" and payload.get("window") == "auto-windowed":
             payload.setdefault("requires_approval", False)
@@ -54,17 +54,18 @@ def enqueue_schedules() -> None:
         target_ref = payload.get("target_ref", "all")
         if row["kind"] in {"proxmox_patch", "proxmox_reboot"}:
             target_ref = payload.get("limit", "proxmox_nodes")
-        if row["kind"] == "package_check":
-            target_ref = payload.get("scope", "all")
 
-        jobs.create_job(
-            kind=row["kind"],
-            target_type=target_type,
-            target_ref=target_ref,
-            payload=payload,
-            requested_by="system",
-            source="schedule",
-        )
+        try:
+            jobs.create_job(
+                kind=row["kind"],
+                target_type=target_type,
+                target_ref=target_ref,
+                payload=payload,
+                requested_by="system",
+                source="schedule",
+            )
+        except ValueError as exc:
+            print(f"schedule {row['name']} skipped: {exc}", flush=True)
 
         with db.db_cursor() as cur:
             cur.execute(
@@ -85,6 +86,7 @@ def claim_worker_job() -> dict | None:
               SELECT id
               FROM jobs
               WHERE executor = 'worker'
+                AND kind NOT IN ('package_check', 'package_patch')
                 AND status = 'queued'
                 AND approval_status <> 'pending'
               ORDER BY created_at ASC
@@ -108,6 +110,12 @@ def execute_job(job: dict) -> None:
     artifacts = legacy.artifacts_from_output(result.get("stdout", ""))
     status = "completed" if result["exit_code"] == 0 else "failed"
     final_result = {"command": command, "artifacts": artifacts, **result}
+    if job["kind"] == "docker_update" and result["exit_code"] == 0 and not payload.get("dry_run", False):
+        try:
+            final_result["update_summary"] = legacy.summarize_docker_update(payload, job["target_ref"])
+        except Exception as exc:  # noqa: BLE001
+            jobs.append_event(job_id, f"docker update summary unavailable: {exc}", stream="stderr")
+            final_result["update_summary_error"] = str(exc)
     jobs.set_job_status(job_id, status, result=final_result)
     for artifact in artifacts:
         jobs.record_backup(
@@ -134,7 +142,13 @@ def execute_job(job: dict) -> None:
 
 def main() -> int:
     db.init_db()
-    print("ops-worker started", flush=True)
+    retired = jobs.retire_legacy_package_jobs()
+    recovered = jobs.recover_stale_worker_jobs()
+    print("rackpatch-worker started", flush=True)
+    if retired:
+        print(f"rackpatch-worker retired {len(retired)} legacy worker package job(s)", flush=True)
+    if recovered:
+        print(f"rackpatch-worker recovered {len(recovered)} stale worker job(s)", flush=True)
     schedule_tick = 0.0
     while True:
         now_monotonic = time.monotonic()

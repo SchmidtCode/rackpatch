@@ -7,7 +7,7 @@
   tasks:
     - name: Load stack catalog
       ansible.builtin.include_vars:
-        file: "{{ ops_stacks_file | default('../config/stacks.yml') }}"
+        file: "{{ rackpatch_stacks_file | default(lookup('env', 'RACKPATCH_STACKS_FILE'), true) | default('../sites/example/stacks.yml', true) }}"
         name: stack_catalog
 
     - name: Render approval payload skeleton
@@ -15,7 +15,7 @@
         argv:
           - ../scripts/render_approval_payload.py
           - --stacks
-          - "{{ ops_stacks_file | default('../config/stacks.yml') }}"
+          - "{{ rackpatch_stacks_file | default(lookup('env', 'RACKPATCH_STACKS_FILE'), true) | default('../sites/example/stacks.yml', true) }}"
           - --window
           - "{{ approval_window }}"
       args:
