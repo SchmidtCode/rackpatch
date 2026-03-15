@@ -852,7 +852,7 @@ function renderInstallPreviews() {
     "# Base agent install",
     selected,
     "",
-    "# Optional: enable limited host maintenance",
+    "# Optional: enable limited host maintenance (requires root)",
     helper,
   ]
     .filter(Boolean)
