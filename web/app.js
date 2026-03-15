@@ -300,6 +300,65 @@ function hostMaintenanceInfo(agent) {
   return { actions, detail };
 }
 
+const LEGACY_CAPABILITY_DISPLAY_ALIASES = {
+  package_check: "host-package-check",
+  "sudo-packages": "host-package-patch",
+};
+
+function normalizeDisplayedCapabilities(values) {
+  const list = Array.isArray(values) ? values : [];
+  const deduped = [];
+  const seen = new Set();
+  list.forEach((value) => {
+    const normalized = LEGACY_CAPABILITY_DISPLAY_ALIASES[String(value)] || String(value || "").trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    deduped.push(normalized);
+  });
+  return deduped;
+}
+
+function getJobSpecialAccess(kind) {
+  return getJobKindConfig(kind).special_access || null;
+}
+
+function hostHasCapability(host, capability) {
+  const capabilities = Array.isArray(host?.agent?.capabilities)
+    ? host.agent.capabilities.map((value) => String(value))
+    : [];
+  return capabilities.includes(capability);
+}
+
+function getJobHostAccess(host, kind) {
+  const access = getJobSpecialAccess(kind);
+  if (!access) {
+    return { eligible: true, detail: "" };
+  }
+  if (hostHasCapability(host, access.required_capability)) {
+    return {
+      eligible: true,
+      detail: hostMaintenanceInfo(host.agent).detail || access.summary || "",
+    };
+  }
+  return {
+    eligible: false,
+    detail: host.agent ? hostMaintenanceInfo(host.agent).detail : access.missing_detail || `${access.label} required.`,
+  };
+}
+
+function buttonStateAttrs(disabled, title = "") {
+  const attrs = [];
+  if (disabled) {
+    attrs.push("disabled");
+  }
+  if (title) {
+    attrs.push(`title="${escapeHtml(title)}"`);
+  }
+  return attrs.length ? ` ${attrs.join(" ")}` : "";
+}
+
 function buildJobResultMarkup(job) {
   const result = job?.result;
   if (!result || typeof result !== "object") {
@@ -555,6 +614,9 @@ function renderJobStackOptions(kind, preserveSelection = true) {
 
 function updateJobHostSelectionState(kind) {
   const hosts = getJobHostsForKind(kind);
+  const eligibleHosts = hosts.filter((host) => getJobHostAccess(host, kind).eligible);
+  const blockedCount = Math.max(hosts.length - eligibleHosts.length, 0);
+  const access = getJobSpecialAccess(kind);
   const selected = getSelectedJobHosts();
   const selectedPreview = selected.slice(0, 3).join(", ");
 
@@ -566,14 +628,22 @@ function updateJobHostSelectionState(kind) {
     return;
   }
 
-  if (selected.length === 0) {
-    jobHostToggle.textContent = "Choose host(s)";
-    jobHostStatus.textContent = `${hosts.length} host${hosts.length === 1 ? "" : "s"} available.`;
+  if (!eligibleHosts.length) {
+    jobHostToggle.textContent = "No eligible hosts";
+    jobHostStatus.textContent = access
+      ? `${hosts.length} host${hosts.length === 1 ? "" : "s"} listed, but this job requires ${access.label}.`
+      : `${hosts.length} host${hosts.length === 1 ? "" : "s"} listed, but none are available right now.`;
     return;
   }
 
-  if (selected.length === hosts.length) {
-    jobHostToggle.textContent = `All ${hosts.length} hosts selected`;
+  if (selected.length === 0) {
+    jobHostToggle.textContent = "Choose host(s)";
+    jobHostStatus.textContent = `${eligibleHosts.length} host${eligibleHosts.length === 1 ? "" : "s"} available.${blockedCount ? ` ${blockedCount} greyed out until ${access?.label || "special access"} is enabled.` : ""}`;
+    return;
+  }
+
+  if (selected.length === eligibleHosts.length) {
+    jobHostToggle.textContent = `All ${eligibleHosts.length} hosts selected`;
     jobHostStatus.textContent = selectedPreview;
     return;
   }
@@ -595,16 +665,20 @@ function renderJobHostOptions(kind, preserveSelection = true) {
 
   jobHostOptions.innerHTML = hosts
     .map((host) => {
-      const checked = previousSelection.has(host.name) ? " checked" : "";
+      const access = getJobHostAccess(host, kind);
+      const checked = access.eligible && previousSelection.has(host.name) ? " checked" : "";
+      const disabled = access.eligible ? "" : " disabled";
       const hostName = escapeHtml(host.name);
       const group = escapeHtml(host.group || "all");
       const address = escapeHtml(host.ansible_host || "n/a");
+      const accessDetail = access.detail ? `<span class="subline">${escapeHtml(access.detail)}</span>` : "";
       return `
-        <label class="job-target-option">
-          <input type="checkbox" value="${hostName}"${checked} />
+        <label class="job-target-option${access.eligible ? "" : " disabled"}">
+          <input type="checkbox" value="${hostName}"${checked}${disabled} />
           <span>
             <strong>${hostName}</strong>
             <span class="subline">${group} · ${address}</span>
+            ${accessDetail}
           </span>
         </label>
       `;
@@ -616,8 +690,9 @@ function renderJobHostOptions(kind, preserveSelection = true) {
 
 function syncJobForm(kind = jobKindSelect.value, { resetOptions = false, preserveSelection = true } = {}) {
   const config = getJobKindConfig(kind);
+  const access = getJobSpecialAccess(kind);
   state.jobFormKind = kind;
-  jobTargetSummary.textContent = config.summary;
+  jobTargetSummary.textContent = [config.summary, access?.summary].filter(Boolean).join(" ");
 
   const showStackPicker = ["stack_multi", "stack_single"].includes(config.mode);
   const showHostPicker = config.mode === "host_multi";
@@ -686,8 +761,19 @@ function buildJobRequest() {
     targetRef = selectedStacks[0];
   } else if (config.mode === "host_multi") {
     const selectedHosts = getSelectedJobHosts();
+    const availableHosts = getJobHostsForKind(kind);
+    const access = getJobSpecialAccess(kind);
     if (!selectedHosts.length) {
       throw new Error("Select at least one host.");
+    }
+    const blockedHosts = selectedHosts.filter((hostName) => {
+      const host = availableHosts.find((item) => item.name === hostName);
+      return host && !getJobHostAccess(host, kind).eligible;
+    });
+    if (blockedHosts.length) {
+      throw new Error(
+        `${access?.short_label || "This job requires special access."} Enable it on: ${blockedHosts.join(", ")}`
+      );
     }
     targetRef = selectedHosts.join(",");
     if (kind === "package_check") {
@@ -888,6 +974,13 @@ function renderHosts() {
         ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span><span class="subline">${escapeHtml(maintenance.detail)}</span>`
         : `${statusBadge(runtime.status || "Worker-routed")}<span class="subline">${escapeHtml(runtime.detail || "Agent optional. Worker and inventory jobs still available.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
+      const packageCheckAccess = getJobHostAccess(item, "package_check");
+      const packagePatchAccess = getJobHostAccess(item, "package_patch");
+      const packageActionNote = packagePatchAccess.eligible
+        ? "Package actions limited to approved host-maintenance helper access."
+        : packageCheckAccess.eligible
+          ? "Package checks are enabled. Package patch access is not enabled on this host."
+          : "Package jobs require the limited host-maintenance helper on this host.";
       const actionButtons = isProxmoxNode
         ? `
             <button class="secondary" data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="true">Patch Dry</button>
@@ -896,10 +989,20 @@ function renderHosts() {
             <button data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="false">Reboot Live</button>
           `
         : `
-            <button class="secondary" data-host-kind="package_check" data-host-name="${hostName}" data-dry-run="true">Check</button>
-            <button class="secondary" data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="true">Patch Dry</button>
-            <button data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="false">Patch Live</button>
+            <button class="secondary" data-host-kind="package_check" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
+              !packageCheckAccess.eligible,
+              packageCheckAccess.detail
+            )}>Check</button>
+            <button class="secondary" data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
+              !packagePatchAccess.eligible,
+              packagePatchAccess.detail
+            )}>Patch Dry</button>
+            <button data-host-kind="package_patch" data-host-name="${hostName}" data-dry-run="false"${buttonStateAttrs(
+              !packagePatchAccess.eligible,
+              packagePatchAccess.detail
+            )}>Patch Live</button>
             <button class="secondary" data-host-kind="snapshot" data-host-name="${hostName}" data-dry-run="false">Snapshot</button>
+            <span class="subline">${escapeHtml(packageActionNote)}</span>
           `;
       return `
         <tr>
@@ -922,6 +1025,7 @@ function renderAgents() {
     ["Agent", "Transport", "Platform", "Version", "Capabilities", "Last Seen"],
     items.map((item) => {
       const maintenance = hostMaintenanceInfo(item);
+      const capabilityList = normalizeDisplayedCapabilities(item.capabilities);
       return `
         <tr>
           <td>
@@ -939,7 +1043,7 @@ function renderAgents() {
             <span class="subline">${escapeHtml(item.update_mode || "unknown")}</span>
           </td>
           <td>
-            ${escapeHtml((item.capabilities || []).join(", ") || "none")}
+            ${escapeHtml(capabilityList.join(", ") || "none")}
             <span class="subline">${escapeHtml(maintenance.detail)}</span>
           </td>
           <td>${escapeHtml(formatTimestamp(item.last_seen_at))}</td>
@@ -955,11 +1059,14 @@ function renderJobs() {
   renderTable(
     "jobs-table",
     ["Job", "Target", "Execution", "Status", "Created", "Actions"],
-    items.map(
-      (item) => `
+    items.map((item) => {
+      const config = getJobKindConfig(item.kind);
+      const access = config.special_access || null;
+      return `
         <tr>
           <td>
             <strong>${escapeHtml(item.kind)}</strong>
+            ${access ? `<span class="subline">${escapeHtml(access.short_label || access.summary || "")}</span>` : ""}
             <span class="subline mono">${escapeHtml(item.id)}</span>
           </td>
           <td>
@@ -989,8 +1096,8 @@ function renderJobs() {
             </div>
           </td>
         </tr>
-      `
-    ),
+      `;
+    }),
     "No jobs yet."
   );
 }
@@ -1478,7 +1585,7 @@ jobHostMenu.addEventListener("click", (event) => {
     return;
   }
   const checked = bulkAction.dataset.jobHostBulk === "all";
-  jobHostOptions.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+  jobHostOptions.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach((input) => {
     input.checked = checked;
   });
   updateJobHostSelectionState(jobKindSelect.value);

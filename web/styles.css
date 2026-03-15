@@ -369,9 +369,20 @@ button.danger {
   gap: 8px;
 }
 
+.table-actions .subline {
+  flex-basis: 100%;
+  margin-top: 0;
+}
+
 .table-actions button {
   padding: 9px 12px;
   font-size: 0.86rem;
+}
+
+.table-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .badge-row {
@@ -593,6 +604,17 @@ button.danger {
   color: var(--text);
 }
 
+.job-target-option.disabled {
+  opacity: 0.56;
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--muted);
+}
+
+.job-target-option.disabled strong {
+  color: var(--muted);
+}
+
 .job-target-option input {
   width: 18px;
   height: 18px;
@@ -602,6 +624,10 @@ button.danger {
   border: 0;
   background: transparent;
   accent-color: var(--accent);
+}
+
+.job-target-option input:disabled {
+  cursor: not-allowed;
 }
 
 .job-target-option strong {

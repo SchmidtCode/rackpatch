@@ -82,7 +82,10 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
             action_labels = ", ".join(action.replace("_", " ") for action in actions)
             detail = str(host_maintenance.get("detail") or f"Limited to approved maintenance actions: {action_labels}.")
         else:
-            detail = str(host_maintenance.get("detail") or "Agent enrolled. Host maintenance helper not enabled.")
+            detail = str(
+                host_maintenance.get("detail")
+                or "Agent enrolled. UI package jobs stay greyed out until the host maintenance helper is enabled."
+            )
         return {
             "status": str(agent.get("status") or "unknown"),
             "detail": detail,
@@ -94,7 +97,7 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
         }
     return {
         "status": "Worker-routed",
-        "detail": "Agent optional. Worker and inventory jobs still available.",
+        "detail": "No agent enrolled. UI package jobs need the host maintenance helper. Worker and inventory jobs still available for other workflows.",
     }
 
 

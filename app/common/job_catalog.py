@@ -71,6 +71,13 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         "mode": "host_multi",
         "target_type": "host",
         "summary": "Choose one or more guest or Docker hosts to inspect for package updates.",
+        "special_access": {
+            "required_capability": "host-package-check",
+            "label": "limited host-maintenance helper",
+            "short_label": "Requires limited host-maintenance helper access.",
+            "summary": "Requires the limited host-maintenance helper on each selected host.",
+            "missing_detail": "Enable the limited host-maintenance helper on the host agent to use package checks from the UI.",
+        },
         "defaults": {
             "executor": "auto",
             "requires_approval": False,
@@ -84,6 +91,13 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         "mode": "host_multi",
         "target_type": "host",
         "summary": "Choose one or more guest or Docker hosts to patch.",
+        "special_access": {
+            "required_capability": "host-package-patch",
+            "label": "limited host-maintenance helper",
+            "short_label": "Requires limited host-maintenance patch access.",
+            "summary": "Requires the limited host-maintenance helper with package patch access on each selected host.",
+            "missing_detail": "Enable the limited host-maintenance helper with package patch access on the host agent to use package patching from the UI.",
+        },
         "defaults": {
             "executor": "auto",
             "dry_run": True,

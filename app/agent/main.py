@@ -38,10 +38,6 @@ HOST_MAINTENANCE_CAPABILITIES = {
     "package_check": "host-package-check",
     "package_patch": "host-package-patch",
 }
-LEGACY_HOST_CAPABILITY_ALIASES = {
-    "host-package-check": "package_check",
-    "host-package-patch": "sudo-packages",
-}
 
 _compose_discovery_cache: dict[str, Any] = {
     "captured_at": 0.0,
@@ -143,9 +139,6 @@ def capabilities() -> list[str]:
         if action not in helper_actions:
             continue
         caps.add(capability)
-        legacy = LEGACY_HOST_CAPABILITY_ALIASES.get(capability)
-        if legacy:
-            caps.add(legacy)
     if Path("/etc/pve").exists():
         caps.add("proxmox")
     return sorted(caps)
