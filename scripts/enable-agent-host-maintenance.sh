@@ -72,6 +72,17 @@ if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "system
   exit 1
 fi
 
+normalize_socket_path() {
+  if [[ "${mode}" != "compose" && "${mode}" != "container" ]]; then
+    return
+  fi
+  local socket_dir
+  socket_dir="$(dirname "${socket_path}")"
+  if [[ "${socket_dir}" == "/run" ]]; then
+    socket_path="/run/rackpatch-host-helper/$(basename "${socket_path}")"
+  fi
+}
+
 if [[ -z "${install_source}" ]]; then
   if [[ -n "${BASH_SOURCE[0]-}" ]]; then
     install_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -175,13 +186,15 @@ restart_helper_service() {
 
 write_compose_override() {
   local target_dir="$1"
+  local socket_dir
+  socket_dir="$(dirname "${socket_path}")"
   cat > "${target_dir}/compose.host-maintenance.yml" <<EOF
 services:
   rackpatch-agent:
     environment:
       RACKPATCH_HOST_HELPER_SOCKET: ${socket_path}
     volumes:
-      - ${socket_path}:${socket_path}
+      - ${socket_dir}:${socket_dir}
 EOF
 }
 
@@ -209,6 +222,7 @@ configure_systemd_agent() {
   systemctl restart rackpatch-agent.service
 }
 
+normalize_socket_path
 create_helper_user
 install_helper_files
 write_helper_env

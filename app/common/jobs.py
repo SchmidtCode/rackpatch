@@ -84,9 +84,19 @@ def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any])
 def _agent_capabilities(agent_id: str | None) -> set[str]:
     if not agent_id:
         return set()
-    row = db.fetch_one("SELECT capabilities FROM agents WHERE id = %s", (agent_id,))
+    row = db.fetch_one("SELECT capabilities, metadata FROM agents WHERE id = %s", (agent_id,))
     values = (row or {}).get("capabilities") or []
-    return {str(value) for value in values if str(value).strip()}
+    selected = {str(value) for value in values if str(value).strip()}
+    metadata = (row or {}).get("metadata") or {}
+    metadata_capabilities = metadata.get("capabilities") or []
+    selected.update(str(value) for value in metadata_capabilities if str(value).strip())
+    host_maintenance = metadata.get("host_maintenance") or {}
+    actions = {str(value) for value in host_maintenance.get("actions", []) if str(value).strip()}
+    if "package_check" in actions:
+        selected.add("host-package-check")
+    if "package_patch" in actions:
+        selected.add("host-package-patch")
+    return selected
 
 
 def _site_host(target_ref: str) -> dict[str, Any] | None:

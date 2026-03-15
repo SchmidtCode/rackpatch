@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
 
-Version in this repo: `v0.3.0`
+Version in this repo: `v0.3.1`
 
 ## What rackpatch does
 
@@ -12,7 +12,7 @@ Version in this repo: `v0.3.0`
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
-## v0.3.0 highlights
+## v0.3.1 highlights
 
 - Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
 - Mobile-friendly navigation, tables, and install/update previews.
@@ -157,10 +157,10 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.0/scripts/update-rackpatch.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.1/scripts/update-rackpatch.sh | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.0
+  --ref v0.3.1
 ```
 
 Example host-maintenance enablement:
@@ -244,7 +244,7 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 - Run `make release-check` before pushing a public branch. It fails if tracked files include `.env`, key material, `secrets/`, or non-example site overlays.
 - Rotate any tokens or passwords from your current local `.env` before the first public push.
 
-## Release flow for v0.3.0
+## Release flow for v0.3.1
 
 If `origin` is already configured, confirm it first:
 
@@ -256,18 +256,18 @@ Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.3.0
-git push -u origin release/v0.3.0
+git switch -c release/v0.3.1
+git push -u origin release/v0.3.1
 ```
 
-Open a pull request from `release/v0.3.0` into `main`. After the PR merges:
+Open a pull request from `release/v0.3.1` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.0 -m "v0.3.0"
-git push origin v0.3.0
+git tag -a v0.3.1 -m "v0.3.1"
+git push origin v0.3.1
 ```
 
 Suggested GitHub release notes:
