@@ -272,9 +272,10 @@ def compose_projects_metadata() -> list[dict[str, Any]]:
     return list(projects)
 
 
-def heartbeat_metadata() -> dict[str, Any]:
+def heartbeat_metadata(current_capabilities: list[str] | None = None) -> dict[str, Any]:
+    current_capabilities = current_capabilities if current_capabilities is not None else capabilities()
     metadata = {
-        "capabilities": capabilities(),
+        "capabilities": current_capabilities,
         "mode": AGENT_MODE,
         "host_maintenance": host_maintenance_metadata(),
     }
@@ -290,12 +291,15 @@ def heartbeat_metadata() -> dict[str, Any]:
 
 
 def heartbeat(state: dict[str, Any]) -> None:
+    current_capabilities = capabilities()
     SESSION.post(
         f"{SERVER_URL}/api/v1/agents/heartbeat",
         headers=agent_headers(state),
         json={
             "agent_id": state["agent_id"],
-            "metadata": heartbeat_metadata(),
+            "version": AGENT_VERSION,
+            "capabilities": current_capabilities,
+            "metadata": heartbeat_metadata(current_capabilities),
         },
         timeout=30,
     ).raise_for_status()

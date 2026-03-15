@@ -658,12 +658,19 @@ def heartbeat(
             UPDATE agents
             SET last_seen_at = NOW(),
                 status = 'online',
+                version = COALESCE(%s, version),
+                capabilities = COALESCE(%s::jsonb, capabilities),
                 metadata = COALESCE(%s::jsonb, metadata),
                 updated_at = NOW()
             WHERE id = %s
             RETURNING id, name, last_seen_at, status
             """,
-            (json.dumps(payload.get("metadata")) if payload.get("metadata") is not None else None, agent_id),
+            (
+                str(payload.get("version")) if payload.get("version") is not None else None,
+                json.dumps(payload.get("capabilities")) if payload.get("capabilities") is not None else None,
+                json.dumps(payload.get("metadata")) if payload.get("metadata") is not None else None,
+                agent_id,
+            ),
         )
         row = cur.fetchone()
     if not row:
