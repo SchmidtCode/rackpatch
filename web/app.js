@@ -2,6 +2,7 @@ const state = {
   token: localStorage.getItem("ops_token") || "",
   selectedJob: null,
   currentPage: "overview",
+  installPreviewMode: "compose",
   data: null,
   flashTimer: null,
 };
@@ -161,6 +162,10 @@ function applyPageState() {
   document.querySelectorAll("[data-page-link]").forEach((node) => {
     node.classList.toggle("active", node.dataset.pageLink === state.currentPage);
   });
+  const activeLink = document.querySelector(`[data-page-link="${state.currentPage}"]`);
+  if (activeLink && window.matchMedia("(max-width: 760px)").matches) {
+    activeLink.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }
 }
 
 function setInputValue(id, value) {
@@ -171,11 +176,89 @@ function setInputValue(id, value) {
   element.value = value;
 }
 
+function shellQuote(value) {
+  return `'${String(value ?? "").replaceAll("'", "'\"'\"'")}'`;
+}
+
+function yamlString(value) {
+  return JSON.stringify(String(value ?? ""));
+}
+
+function buildShellInstall(settings, token, mode) {
+  return `curl -fsSL ${shellQuote(settings.public.install_script_url)} | bash -s -- --server-url ${shellQuote(settings.public.base_url)} --bootstrap-token ${shellQuote(token)} --mode ${mode} --install-source ${shellQuote(settings.public.repo_url)} --install-ref ${shellQuote(settings.public.repo_ref)}`;
+}
+
+function buildComposeInstall(settings, token) {
+  const composeDir = settings.public.agent_compose_dir || "/srv/compose/rackpatch";
+  const composeDirQuoted = shellQuote(composeDir);
+  const srcDirQuoted = shellQuote(`${composeDir}/src`);
+  const stateDirQuoted = shellQuote(`${composeDir}/state`);
+  const composeFileQuoted = shellQuote(`${composeDir}/compose.yml`);
+  const repoUrlQuoted = shellQuote(settings.public.repo_url);
+  const repoRefQuoted = shellQuote(settings.public.repo_ref);
+  const composeFile = [
+    "services:",
+    "  rackpatch-agent:",
+    "    container_name: rackpatch-agent",
+    "    image: rackpatch-agent:local",
+    "    build:",
+    "      context: ./src",
+    "      dockerfile: Dockerfile.agent",
+    "    restart: unless-stopped",
+    "    environment:",
+    `      OPS_SERVER_URL: ${yamlString(settings.public.base_url)}`,
+    `      OPS_AGENT_BOOTSTRAP_TOKEN: ${yamlString(token)}`,
+    '      OPS_AGENT_NAME: "CHANGE_ME_TO_INVENTORY_HOSTNAME"',
+    '      OPS_AGENT_LABELS: ""',
+    '      OPS_AGENT_MODE: "container"',
+    "    volumes:",
+    "      - ./state:/var/lib/ops-agent",
+    "      - /var/run/docker.sock:/var/run/docker.sock",
+  ].join("\n");
+  return [
+    `# Docker Compose deployment`,
+    `# Target folder: ${composeDir}`,
+    `# Set OPS_AGENT_NAME to the host name rackpatch uses in inventory.`,
+    `mkdir -p ${composeDirQuoted} ${stateDirQuoted}`,
+    `if [ ! -d ${srcDirQuoted}/.git ]; then`,
+    `  git clone --depth 1 --branch ${repoRefQuoted} ${repoUrlQuoted} ${srcDirQuoted}`,
+    "else",
+    `  git -C ${srcDirQuoted} fetch --depth 1 origin ${repoRefQuoted}`,
+    `  git -C ${srcDirQuoted} checkout ${repoRefQuoted}`,
+    `  git -C ${srcDirQuoted} pull --ff-only origin ${repoRefQuoted}`,
+    "fi",
+    `cat > ${composeFileQuoted} <<'EOF'`,
+    composeFile,
+    "EOF",
+    `docker compose -f ${composeFileQuoted} up -d --build`,
+  ].join("\n");
+}
+
+function buildInstallBlocks(settings, token = settings.default_agent_bootstrap_token) {
+  return {
+    compose: buildComposeInstall(settings, token),
+    container: buildShellInstall(settings, token, "container"),
+    systemd: buildShellInstall(settings, token, "systemd"),
+  };
+}
+
+function renderInstallPreviews() {
+  if (!state.data?.settings) {
+    return;
+  }
+  const blocks = buildInstallBlocks(state.data.settings);
+  const selected = blocks[state.installPreviewMode] || blocks.compose;
+  document.getElementById("overview-install").textContent = selected;
+  document.getElementById("settings-install").textContent = selected;
+  document.querySelectorAll("[data-install-mode]").forEach((node) => {
+    node.classList.toggle("active", node.dataset.installMode === state.installPreviewMode);
+  });
+}
+
 function renderOverview() {
   const overview = state.data.overview;
   const jobs = state.data.jobs.items;
   const approvals = jobs.filter((item) => item.approval_status === "pending");
-  const settings = state.data.settings;
 
   const stats = [
     ["Agents", overview.counts.agents],
@@ -246,9 +329,7 @@ function renderOverview() {
     ),
     "No pending approvals."
   );
-
-  document.getElementById("overview-install").textContent =
-    `${settings.agent_install.container}\n\n${settings.agent_install.systemd}`;
+  renderInstallPreviews();
 }
 
 function renderStacks() {
@@ -487,6 +568,7 @@ function renderSettings() {
   setInputValue("public-repo-url", settings.public.repo_url || "");
   setInputValue("public-repo-ref", settings.public.repo_ref || "");
   setInputValue("public-install-script-url", settings.public.install_script_url_override || "");
+  setInputValue("public-agent-compose-dir", settings.public.agent_compose_dir || "");
   setInputValue("telegram-chat-ids", settings.telegram.chat_ids_csv || "");
   if (document.activeElement !== document.getElementById("telegram-bot-token")) {
     document.getElementById("telegram-bot-token").value = "";
@@ -499,8 +581,6 @@ function renderSettings() {
     `Service mode: polling getUpdates`,
   ].join("\n");
 
-  document.getElementById("settings-install").textContent =
-    `${settings.agent_install.container}\n\n${settings.agent_install.systemd}`;
   document.getElementById("settings-paths").textContent = [
     `Site: ${settings.site_name}`,
     `Site root: ${settings.site_root}`,
@@ -508,6 +588,7 @@ function renderSettings() {
     `Stacks: ${settings.stacks_path}`,
     `Maintenance: ${settings.maintenance_path}`,
     `Public repo: ${settings.public.repo_url}@${settings.public.repo_ref}`,
+    `Agent compose dir: ${settings.public.agent_compose_dir}`,
   ].join("\n");
 
   document.getElementById("telegram-help").textContent = [
@@ -530,6 +611,7 @@ function renderSettings() {
     "/schedule <name-or-id> on|off",
     '/job <kind> <target_type> <target_ref> {"executor":"auto"}',
   ].join("\n");
+  renderInstallPreviews();
 }
 
 function renderAll() {
@@ -608,6 +690,7 @@ async function savePublicSettings() {
       repo_url: document.getElementById("public-repo-url").value,
       repo_ref: document.getElementById("public-repo-ref").value,
       install_script_url: document.getElementById("public-install-script-url").value,
+      agent_compose_dir: document.getElementById("public-agent-compose-dir").value,
     }),
   });
   state.data.settings = result;
@@ -644,15 +727,19 @@ async function createAgentToken() {
     body: JSON.stringify({ label }),
   });
   const settings = state.data.settings;
+  const blocks = buildInstallBlocks(settings, result.token);
   document.getElementById("agent-token-result").textContent = [
     `Label: ${result.label}`,
     `Token: ${result.token}`,
     "",
-    `Container install:`,
-    `curl -fsSL ${settings.public.install_script_url} | sh -s -- --server-url ${settings.public.base_url} --bootstrap-token ${result.token} --mode container --install-source ${settings.public.repo_url}`,
+    `Docker Compose example:`,
+    blocks.compose,
+    "",
+    `Docker deploy command:`,
+    blocks.container,
     "",
     `Systemd install:`,
-    `curl -fsSL ${settings.public.install_script_url} | sh -s -- --server-url ${settings.public.base_url} --bootstrap-token ${result.token} --mode systemd --install-source ${settings.public.repo_url}`,
+    blocks.systemd,
   ].join("\n");
   showFlash(`Created agent token ${result.label}.`);
 }
@@ -740,6 +827,13 @@ appScreen.addEventListener("click", async (event) => {
   const pageLink = event.target.closest("[data-page-link]");
   if (pageLink) {
     setPage(pageLink.dataset.pageLink);
+    return;
+  }
+
+  const installModeButton = event.target.closest("[data-install-mode]");
+  if (installModeButton) {
+    state.installPreviewMode = installModeButton.dataset.installMode || "compose";
+    renderInstallPreviews();
     return;
   }
 

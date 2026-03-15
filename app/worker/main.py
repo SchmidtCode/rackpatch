@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from croniter import croniter
 
-from common import config, db, jobs, legacy
+from common import config, db, jobs, legacy, notify
 
 
 def now() -> datetime:
@@ -129,6 +129,7 @@ def execute_job(job: dict) -> None:
                 "container_path": str(config.BACKUPS_ROOT / payload_name),
             },
         )
+    notify.send_job_event(job, status, final_result)
 
 
 def main() -> int:
@@ -148,7 +149,9 @@ def main() -> int:
                 execute_job(job)
             except Exception as exc:  # noqa: BLE001
                 jobs.append_event(str(job["id"]), f"worker error: {exc}", stream="stderr")
-                jobs.set_job_status(str(job["id"]), "failed", result={"error": str(exc)})
+                result = {"error": str(exc)}
+                jobs.set_job_status(str(job["id"]), "failed", result=result)
+                notify.send_job_event(job, "failed", result)
             continue
         time.sleep(config.WORKER_POLL_SECONDS)
 

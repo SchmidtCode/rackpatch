@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
 
-Version in this repo: `v0.1.0`
+Version in this repo: `v0.2.0`
 
 The main runtime is:
 
@@ -17,7 +17,7 @@ The main runtime is:
 ## Quick Start
 
 ```bash
-cd /srv/compose/ops
+cd /srv/compose/rackpatch
 cp .env.example .env
 docker compose up -d --build
 ```
@@ -38,7 +38,7 @@ If `OPS_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootst
 Full refresh:
 
 ```bash
-cd /srv/compose/ops
+cd /srv/compose/rackpatch
 docker compose up -d --build
 docker compose ps
 ```
@@ -71,6 +71,13 @@ rackpatch now uses page-style navigation instead of one long dashboard:
 - `Schedules`: disabled-by-default automation controls
 - `Backups`: artifacts and rollback records
 - `Settings`: public repo config, Telegram config, install commands, site paths
+
+## v0.2.0 Highlights
+
+- Broke the UI into focused pages instead of one long dashboard.
+- Added a mobile-friendly layout for navigation, tables, and install previews.
+- Seeded clearer disabled-by-default sample schedules for discovery, package checks, patch approvals, and Proxmox patching.
+- Added Telegram notifications for approval requests, approvals, and job completion results.
 
 ## Telegram Control
 
@@ -159,21 +166,30 @@ If `origin` already exists, do not add it again. Check it with:
 git remote -v
 ```
 
-Your earlier push failed because GitHub already had a `main` branch commit. Since you want the public rackpatch branch to replace it, use:
+For the `v0.2.0` release, use a normal branch-to-PR flow instead of force-pushing `main`:
 
 ```bash
-git switch public/v0.1.0
-git push -u origin public/v0.1.0:main --force-with-lease
-git push origin public/v0.1.0
-git push origin v0.1.0
+git fetch origin
+git switch -c release/v0.2.0
+git push -u origin release/v0.2.0
 ```
 
-After that, in GitHub:
+Open a pull request from `release/v0.2.0` into `main`, then after merge:
 
-- set the default branch to `main`
-- create a release from `v0.1.0`
-- add a repo description and topics
-- enable Issues and optionally Discussions
+```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+Suggested GitHub release notes:
+
+- Broke the UI into page-based views.
+- Added a mobile-friendly version of the web UI.
+- Added seeded sample schedules for common maintenance flows.
+- Added Telegram notifications for approvals and job outcomes.
 
 ## Agent Enrollment
 
@@ -182,22 +198,25 @@ The UI `Settings` page shows the exact one-line install commands based on:
 - `OPS_PUBLIC_BASE_URL`
 - `OPS_PUBLIC_REPO_URL`
 - `OPS_PUBLIC_REPO_REF`
+- `OPS_PUBLIC_AGENT_COMPOSE_DIR`
 - the current bootstrap token
 
 Manual example:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | sh -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | bash -s -- \
   --server-url http://YOUR-OPS-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
-  --install-source https://github.com/SchmidtCode/rackpatch.git
+  --install-source https://github.com/SchmidtCode/rackpatch.git \
+  --install-ref main
 ```
 
 Current agent packaging options:
 
 - container mode: installs under `/opt/rackpatch-agent` and starts a compose-managed `rackpatch-agent`
 - systemd mode: installs under `/opt/rackpatch-agent` and starts `rackpatch-agent.service`
+- Docker Compose mode: shows a copy/paste example that creates `compose.yml` under the configured compose directory and starts the agent with `docker compose`
 
 ## Layout
 

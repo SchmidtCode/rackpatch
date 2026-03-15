@@ -9,10 +9,11 @@ healthcheck_delay: 3
 maintenance_timezone: America/New_York
 
 default_windows:
-  discovery: "0 5 * * *"
-  docker_auto: "30 5 * * *"
-  approved_guest_container: "0 4 * * 6"
-  proxmox_nodes: "30 4 * * 0"
+  docker_discovery: "0 5 * * *"
+  host_package_check: "15 5 * * *"
+  guest_patch_approval: "0 4 * * 6"
+  docker_update_approval: "30 5 * * 6"
+  proxmox_patch_approval: "30 4 * * 0"
 
 proxmox:
   api_user: "{{ lookup('env', 'PROXMOX_API_USER') | default('root@pam', true) }}"

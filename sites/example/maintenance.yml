@@ -1,11 +1,13 @@
 windows:
-  discovery:
+  docker_discovery:
     cron: "0 5 * * *"
-  docker_auto:
-    cron: "30 5 * * *"
-  approved_guest_container:
+  host_package_check:
+    cron: "15 5 * * *"
+  guest_patch_approval:
     cron: "0 4 * * 6"
-  proxmox_nodes:
+  docker_update_approval:
+    cron: "30 5 * * 6"
+  proxmox_patch_approval:
     cron: "30 4 * * 0"
 
 batches:

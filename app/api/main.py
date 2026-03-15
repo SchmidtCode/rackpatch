@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from common import auth, config, db, jobs, runtime_settings, site
+from common import auth, config, db, jobs, notify, runtime_settings, site
 
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
@@ -282,14 +282,16 @@ def settings(username: str = Depends(auth.require_user)) -> dict[str, Any]:
         "default_agent_bootstrap_token": bootstrap_token,
         "agent_install": {
             "container": (
-                f"curl -fsSL {public_settings['install_script_url']} | sh -s -- "
+                f"curl -fsSL {public_settings['install_script_url']} | bash -s -- "
                 f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
-                f"--mode container --install-source {public_settings['repo_url']}"
+                f"--mode container --install-source {public_settings['repo_url']} "
+                f"--install-ref {public_settings['repo_ref']}"
             ),
             "systemd": (
-                f"curl -fsSL {public_settings['install_script_url']} | sh -s -- "
+                f"curl -fsSL {public_settings['install_script_url']} | bash -s -- "
                 f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
-                f"--mode systemd --install-source {public_settings['repo_url']}"
+                f"--mode systemd --install-source {public_settings['repo_url']} "
+                f"--install-ref {public_settings['repo_ref']}"
             ),
         },
     }
@@ -485,4 +487,7 @@ def complete_job(
             path=artifact.get("path", ""),
             metadata=artifact,
         )
+    job = db.fetch_one("SELECT * FROM jobs WHERE id = %s", (job_id,))
+    if job:
+        notify.send_job_event(job, status, result)
     return {"status": "ok"}

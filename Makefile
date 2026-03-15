@@ -37,4 +37,4 @@ check-packages:
 	$(EXEC) python3 scripts/check_package_updates.py --scope $(or $(SCOPE),all) $(if $(HOSTS),--host $(HOSTS),)
 
 agent-install:
-	./scripts/install-agent.sh --server-url $(SERVER_URL) --bootstrap-token $(BOOTSTRAP_TOKEN) --mode $(or $(MODE),container)
+	./scripts/install-agent.sh --server-url $(SERVER_URL) --bootstrap-token $(BOOTSTRAP_TOKEN) --mode $(or $(MODE),container) $(if $(INSTALL_SOURCE),--install-source $(INSTALL_SOURCE),) $(if $(INSTALL_REF),--install-ref $(INSTALL_REF),)

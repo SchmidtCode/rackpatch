@@ -47,6 +47,7 @@ services:
       OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
       OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      OPS_PUBLIC_AGENT_COMPOSE_DIR: ${OPS_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
@@ -94,6 +95,7 @@ services:
       OPS_PUBLIC_REPO_URL: ${OPS_PUBLIC_REPO_URL:-https://github.com/SchmidtCode/rackpatch.git}
       OPS_PUBLIC_REPO_REF: ${OPS_PUBLIC_REPO_REF:-main}
       OPS_PUBLIC_INSTALL_SCRIPT_URL: ${OPS_PUBLIC_INSTALL_SCRIPT_URL:-}
+      OPS_PUBLIC_AGENT_COMPOSE_DIR: ${OPS_PUBLIC_AGENT_COMPOSE_DIR:-/srv/compose/rackpatch}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       ANSIBLE_CONFIG: /workspace/ansible.cfg

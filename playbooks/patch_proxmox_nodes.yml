@@ -5,6 +5,7 @@
   serial: 1
   vars:
     execution_dry_run: "{{ dry_run | default(false) | bool }}"
+    proxmox_config_backup_name: "{{ inventory_hostname }}-etc-pve-{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}.tgz"
   pre_tasks:
     - name: Guard against concurrent node patching
       ansible.builtin.assert:
@@ -18,6 +19,38 @@
           node: "{{ inventory_hostname }}"
           mobility_policy: manual-or-pinned
           dry_run: "{{ execution_dry_run }}"
+
+    - name: Ensure controller backup root exists
+      ansible.builtin.file:
+        path: "{{ backup_root }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+
+    - name: Archive Proxmox cluster config before patching
+      ansible.builtin.archive:
+        path: /etc/pve
+        dest: "/tmp/{{ proxmox_config_backup_name }}"
+        format: gz
+      when: not execution_dry_run
+
+    - name: Fetch Proxmox config backup to controller
+      ansible.builtin.fetch:
+        src: "/tmp/{{ proxmox_config_backup_name }}"
+        dest: "{{ backup_root }}/"
+        flat: true
+      when: not execution_dry_run
+
+    - name: Remove temporary Proxmox config backup
+      ansible.builtin.file:
+        path: "/tmp/{{ proxmox_config_backup_name }}"
+        state: absent
+      when: not execution_dry_run
+
+    - name: Emit Proxmox backup artifact marker
+      ansible.builtin.debug:
+        msg: "OPS_ARTIFACT kind=backup stack={{ inventory_hostname }} value={{ backup_root }}/{{ proxmox_config_backup_name }}"
+      when: not execution_dry_run
 
   roles:
     - role: os_patch
