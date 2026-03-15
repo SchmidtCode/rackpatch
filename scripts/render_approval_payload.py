@@ -2,35 +2,32 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
 OPS_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_STACKS = Path(os.environ.get('OPS_STACKS_FILE', OPS_ROOT / 'config' / 'stacks.yml'))
+sys.path.insert(0, str(OPS_ROOT / "app"))
 
-
-def load_yaml(path: Path):
-    with path.open('r', encoding='utf-8') as handle:
-        return yaml.safe_load(handle)
+from common import site, stack_catalog  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Render approval payload from the stack catalog.')
-    parser.add_argument('--stacks', default=str(DEFAULT_STACKS))
+    parser.add_argument('--stacks', default=str(site.stacks_path()))
     parser.add_argument('--window', default='approved_guest_container')
     parser.add_argument('--event-file')
     args = parser.parse_args()
 
-    stack_catalog = load_yaml(Path(args.stacks))
+    del args.stacks
+    stack_catalog_payload = {"stacks": stack_catalog.load_stack_catalog()}
     event_payload = None
     if args.event_file:
         with Path(args.event_file).open('r', encoding='utf-8') as handle:
             event_payload = json.load(handle)
 
     selected = []
-    for stack in stack_catalog['stacks']:
+    for stack in stack_catalog_payload['stacks']:
         if args.window == 'discovery' or stack['update_mode'] == args.window or stack['name'] in (event_payload or {}).get('approved_services', []):
             selected.append(
                 {

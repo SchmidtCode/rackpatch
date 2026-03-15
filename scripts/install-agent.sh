@@ -5,13 +5,14 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode container|systemd [--name NAME] [--labels a,b] [--install-source PATH] [--install-ref REF]
+  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--name NAME] [--labels a,b] [--install-source PATH] [--install-ref REF]
 EOF
 }
 
 server_url=""
 bootstrap_token=""
 mode="container"
+compose_dir="/srv/compose/rackpatch-agent"
 name="$(hostname)"
 labels=""
 install_source=""
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mode)
       mode="$2"
+      shift 2
+      ;;
+    --compose-dir)
+      compose_dir="$2"
       shift 2
       ;;
     --name)
@@ -96,6 +101,46 @@ resolve_source() {
 
 src_root="$(resolve_source)"
 
+if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "systemd" ]]; then
+  echo "unsupported mode: ${mode}" >&2
+  usage
+  exit 1
+fi
+
+  if [[ "${mode}" == "compose" ]]; then
+  install_dir="${compose_dir}"
+  mkdir -p "${install_dir}" "${install_dir}/state"
+  rm -rf "${install_dir}/src"
+  mkdir -p "${install_dir}/src"
+  cp -R "${src_root}/app" "${install_dir}/src/app"
+  cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
+  cp "${src_root}/requirements-ops.txt" "${install_dir}/src/requirements-ops.txt"
+  cat > "${install_dir}/compose.yml" <<EOF
+services:
+  rackpatch-agent:
+    container_name: rackpatch-agent
+    image: rackpatch-agent:local
+    build:
+      context: ./src
+      dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    environment:
+      RACKPATCH_SERVER_URL: ${server_url}
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
+      RACKPATCH_AGENT_NAME: ${name}
+      RACKPATCH_AGENT_LABELS: ${labels}
+      RACKPATCH_AGENT_MODE: compose
+      RACKPATCH_AGENT_COMPOSE_DIR: ${install_dir}
+      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
+    volumes:
+      - ./state:/var/lib/rackpatch-agent
+      - /var/run/docker.sock:/var/run/docker.sock
+EOF
+  docker compose -f "${install_dir}/compose.yml" up -d --build
+  echo "compose agent installed under ${install_dir}"
+  exit 0
+fi
+
 if [[ "${mode}" == "container" ]]; then
   install_dir="/opt/rackpatch-agent"
   mkdir -p "${install_dir}"
@@ -111,13 +156,15 @@ services:
     image: rackpatch-agent:local
     restart: unless-stopped
     environment:
-      OPS_SERVER_URL: ${server_url}
-      OPS_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
-      OPS_AGENT_NAME: ${name}
-      OPS_AGENT_LABELS: ${labels}
-      OPS_AGENT_MODE: container
+      RACKPATCH_SERVER_URL: ${server_url}
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
+      RACKPATCH_AGENT_NAME: ${name}
+      RACKPATCH_AGENT_LABELS: ${labels}
+      RACKPATCH_AGENT_MODE: container
+      RACKPATCH_AGENT_INSTALL_DIR: ${install_dir}
+      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
     volumes:
-      - /var/lib/rackpatch-agent:/var/lib/ops-agent
+      - /var/lib/rackpatch-agent:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
   docker compose -f "${install_dir}/compose.yml" up -d
@@ -134,12 +181,13 @@ python3 -m venv "${install_dir}/venv"
 "${install_dir}/venv/bin/pip" install --upgrade pip
 "${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-ops.txt"
 cat > "${install_dir}/env" <<EOF
-OPS_SERVER_URL=${server_url}
-OPS_AGENT_BOOTSTRAP_TOKEN=${bootstrap_token}
-OPS_AGENT_NAME=${name}
-OPS_AGENT_LABELS=${labels}
-OPS_AGENT_MODE=systemd
-OPS_AGENT_STATE_DIR=/var/lib/rackpatch-agent
+RACKPATCH_SERVER_URL=${server_url}
+RACKPATCH_AGENT_BOOTSTRAP_TOKEN=${bootstrap_token}
+RACKPATCH_AGENT_NAME=${name}
+RACKPATCH_AGENT_LABELS=${labels}
+RACKPATCH_AGENT_MODE=systemd
+RACKPATCH_AGENT_STATE_DIR=/var/lib/rackpatch-agent
+RACKPATCH_AGENT_INSTALL_DIR=${install_dir}
 PYTHONPATH=${install_dir}/app
 EOF
 

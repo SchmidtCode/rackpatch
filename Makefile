@@ -1,23 +1,23 @@
 SHELL := /bin/bash
 DC := docker compose
-EXEC := $(DC) exec -T ops-api
+EXEC := $(DC) exec -T api
 
-.PHONY: up build logs shell worker-logs backup-legacy rollback validate check-updates check-packages agent-install
+.PHONY: up build logs shell worker-logs backup-legacy rollback validate release-check check-updates check-packages agent-install
 
 up:
-	$(DC) up -d --build
+	$(DC) up -d --build --remove-orphans
 
 build:
 	$(DC) build
 
 logs:
-	$(DC) logs -f ops-api
+	$(DC) logs -f api
 
 shell:
-	$(DC) exec ops-api bash
+	$(DC) exec api bash
 
 worker-logs:
-	$(DC) logs -f ops-worker
+	$(DC) logs -f worker
 
 backup-legacy:
 	./scripts/backup_legacy_stack.sh
@@ -29,6 +29,9 @@ validate:
 	./scripts/validate-policy.py
 	$(EXEC) python3 scripts/check_stack_updates.py --window all >/dev/null
 	$(EXEC) python3 scripts/check_package_updates.py --scope all >/dev/null
+
+release-check:
+	python3 scripts/release_check.py
 
 check-updates:
 	$(EXEC) python3 scripts/check_stack_updates.py --window $(or $(WINDOW),all) $(if $(STACKS),--stack $(STACKS),)

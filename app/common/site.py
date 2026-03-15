@@ -8,6 +8,9 @@ import yaml
 from common import config
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -15,8 +18,19 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
+def _resolve_workspace_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    try:
+        relative = path.relative_to("/workspace")
+    except ValueError:
+        return path
+    candidate = REPO_ROOT / relative
+    return candidate if candidate.exists() else path
+
+
 def site_root() -> Path:
-    return config.SITE_ROOT
+    return _resolve_workspace_path(config.SITE_ROOT)
 
 
 def site_name() -> str:
@@ -39,15 +53,20 @@ def group_vars_path() -> Path:
     return site_root() / "inventory" / "group_vars" / "all.yml"
 
 
-def load_stacks() -> list[dict[str, Any]]:
+def load_defined_stacks() -> list[dict[str, Any]]:
     return _load_yaml(stacks_path()).get("stacks", [])
 
 
+def load_stacks() -> list[dict[str, Any]]:
+    from common import stack_catalog
+
+    return stack_catalog.load_stack_catalog()
+
+
 def find_stack(name: str) -> dict[str, Any] | None:
-    for stack in load_stacks():
-        if stack.get("name") == name:
-            return stack
-    return None
+    from common import stack_catalog
+
+    return stack_catalog.find_stack(name)
 
 
 def load_group_vars() -> dict[str, Any]:
@@ -82,7 +101,7 @@ def load_hosts() -> list[dict[str, Any]]:
 
 def default_schedules() -> list[dict[str, Any]]:
     windows = load_group_vars().get("default_windows", {})
-    stack_names = [stack["name"] for stack in load_stacks() if stack.get("name")]
+    stack_names = [stack["name"] for stack in load_defined_stacks() if stack.get("name")]
     return [
         {
             "name": "Docker Image Discovery",

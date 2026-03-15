@@ -17,7 +17,9 @@ venv/
 data/
 state/*
 !state/.gitkeep
-sites/local/
+sites/*
+!sites/example/
+!sites/example/**
 
 # Local environment and secrets
 .env

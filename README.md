@@ -2,86 +2,185 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
 
-Version in this repo: `v0.2.0`
+Version in this repo: `v0.2.1`
 
-The main runtime is:
+New installs should use `RACKPATCH_*` environment variables. Legacy `OPS_*` aliases are still accepted so existing deployments can upgrade in place.
 
-- `ops-web`: rackpatch web UI
-- `ops-api`: backend API
-- `ops-worker`: database-backed job runner
-- `ops-db`: Postgres
-- `ops-telegram`: Telegram bot for remote job control
-- `ops-notify`: optional send-only Telegram/webhook notifier
-- `ops-agent`: remote polling agent for Debian, Ubuntu, and Docker hosts
+## What rackpatch does
 
-## Quick Start
+- Tracks Docker stacks from your site catalog and discovered compose projects.
+- Runs image discovery, stack updates, backups, rollback capture, and rollback execution.
+- Handles guest package checks, guest patching, snapshots, and Proxmox patch/reboot workflows.
+- Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
+- Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
+
+## v0.2.1 highlights
+
+- Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
+- Mobile-friendly navigation, tables, and install/update previews.
+- Backend-generated job-kind metadata and install/update commands shared by the UI and automation.
+- Machine-readable `/api/v1/context` and `/api/v1/job-kinds` endpoints for AI operators and scripted setup.
+- GitHub-backed latest-version checks for the control plane and agents.
+- Safer public-repo prep with `make release-check` plus stricter ignore rules for secrets and private overlays.
+
+## Runtime services
+
+- `web`: rackpatch web UI, container `rackpatch-web`
+- `api`: backend API, container `rackpatch-api`
+- `worker`: database-backed job runner, container `rackpatch-worker`
+- `db`: Postgres, container `rackpatch-db`
+- `telegram`: Telegram bot for remote job control, container `rackpatch-telegram`
+- `notify`: optional send-only Telegram/webhook notifier, container `rackpatch-notify`
+- `rackpatch-agent`: remote polling agent for Debian, Ubuntu, and Docker hosts
+
+## Quick start
 
 ```bash
 cd /srv/compose/rackpatch
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 ```
 
-The UI is exposed on:
-
-- `http://<host>:3011`
+The UI is available at `http://<host>:3011`.
 
 Default bootstrap login:
 
-- username: `opsadmin`
-- password: value of `OPS_ADMIN_PASSWORD`
+- Username: value of `RACKPATCH_ADMIN_USERNAME` (default `opsadmin`)
+- Password: value of `RACKPATCH_ADMIN_PASSWORD`
 
-If `OPS_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootstrap token on first start and shows it in `Settings`.
+Fresh installs default to `RACKPATCH_DB_VOLUME=rackpatch-db-data`. Existing installs can keep their current DB volume name by setting `RACKPATCH_DB_VOLUME` or the legacy `OPS_DB_VOLUME`.
 
-## Refresh After Changes
+If `RACKPATCH_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootstrap token on first start and exposes it in `Settings`.
 
-Full refresh:
-
-```bash
-cd /srv/compose/rackpatch
-docker compose up -d --build
-docker compose ps
-```
-
-Targeted refreshes:
+## Common refresh commands
 
 ```bash
-# Frontend only
-docker compose up -d --build ops-web
-
-# API / worker / Telegram bot
-docker compose up -d --build ops-api ops-worker ops-telegram
-
-# Logs
-docker compose logs -f ops-api ops-worker ops-web ops-telegram
+docker compose up -d --build --remove-orphans
+docker compose up -d --build web
+docker compose up -d --build api worker telegram
+docker compose logs -f api worker web telegram
 ```
 
-If you changed `.env`, rerun `docker compose up -d --build` so containers are recreated with the new environment. If you changed the web UI, do a hard refresh in the browser after redeploying.
+If you change `.env`, rerun `docker compose up -d --build --remove-orphans` so containers are recreated with the new environment.
 
-## UI Layout
+## Site overlays
 
-rackpatch now uses page-style navigation instead of one long dashboard:
+Tracked defaults use the example overlay:
 
-- `Overview`: health, recent jobs, pending approvals, install commands
-- `Stacks`: compact table with discover, dry-run, live update, rollback
-- `Hosts`: inventory, agent state, package and Proxmox actions
-- `Agents`: registered pollers and capabilities
-- `Jobs`: manual job form plus live job logs
-- `Approvals`: pending gated work
-- `Schedules`: disabled-by-default automation controls
-- `Backups`: artifacts and rollback records
-- `Settings`: public repo config, Telegram config, install commands, site paths
+- `RACKPATCH_SITE_NAME=example`
+- `RACKPATCH_SITE_ROOT=/workspace/sites/example`
 
-## v0.2.0 Highlights
+To create a private overlay:
 
-- Broke the UI into focused pages instead of one long dashboard.
-- Added a mobile-friendly layout for navigation, tables, and install previews.
-- Seeded clearer disabled-by-default sample schedules for discovery, package checks, patch approvals, and Proxmox patching.
-- Added Telegram notifications for approval requests, approvals, and job completion results.
+```bash
+cp -R sites/example sites/local
+```
 
-## Telegram Control
+Then point `.env` at it:
 
-`ops-telegram` uses the same backend jobs and approvals as the UI. Configure the bot token and allowed chat IDs in `Settings`, then use commands like:
+```dotenv
+RACKPATCH_SITE_NAME=local
+RACKPATCH_SITE_ROOT=/workspace/sites/local
+```
+
+Any `sites/*` overlay except `sites/example` is ignored by both git and the Docker build context.
+
+If the control-plane host is also present in inventory, set `rackpatch_control_plane: true` on that host so the `Hosts` page marks it correctly even when the public URL hostname and inventory address do not match exactly.
+
+## Public repo and GitHub settings
+
+For public install/update command generation, set:
+
+```dotenv
+RACKPATCH_PUBLIC_BASE_URL=http://YOUR-RACKPATCH-HOST:3011
+RACKPATCH_PUBLIC_REPO_URL=https://github.com/SchmidtCode/rackpatch.git
+RACKPATCH_PUBLIC_REPO_REF=main
+RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL=
+RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR=/srv/compose/rackpatch-agent
+RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR=/srv/compose/rackpatch
+RACKPATCH_CORS_ORIGINS=
+```
+
+Notes:
+
+- `RACKPATCH_PUBLIC_REPO_URL` can be a GitHub HTTPS URL or GitHub SSH URL such as `git@github.com:SchmidtCode/rackpatch.git`.
+- If `RACKPATCH_PUBLIC_INSTALL_SCRIPT_URL` is blank, rackpatch derives raw GitHub script URLs automatically.
+- `RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR` now defaults to `/srv/compose/rackpatch-agent` so compose-mode agent installs do not target the main rackpatch stack directory.
+- `RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR` stays `/srv/compose/rackpatch` for control-plane updates.
+
+After changing public repo settings, rebuild the services that expose generated commands:
+
+```bash
+docker compose up -d --build api web telegram
+```
+
+## Agent install and update flows
+
+The `Settings` page exposes exact generated commands for agent install and update workflows. Those commands are built from:
+
+- `RACKPATCH_PUBLIC_BASE_URL`
+- `RACKPATCH_PUBLIC_REPO_URL`
+- `RACKPATCH_PUBLIC_REPO_REF`
+- `RACKPATCH_PUBLIC_AGENT_COMPOSE_DIR`
+- `RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR`
+- the current bootstrap token
+
+Agent packaging modes:
+
+- `compose`: installs under the configured agent compose directory and runs with `docker compose`
+- `container`: installs under `/opt/rackpatch-agent` and runs a compose-managed `rackpatch-agent:local`
+- `systemd`: installs under `/opt/rackpatch-agent` and runs `rackpatch-agent.service`
+
+Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeploying, so agent code changes are not skipped during updates.
+
+Example container install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | bash -s -- \
+  --server-url http://YOUR-RACKPATCH-HOST:3011 \
+  --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
+  --mode container \
+  --install-source https://github.com/SchmidtCode/rackpatch.git \
+  --install-ref main
+```
+
+Example stack update:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.2.1/scripts/update-rackpatch.sh | bash -s -- \
+  --install-dir /srv/compose/rackpatch \
+  --repo-url https://github.com/SchmidtCode/rackpatch.git \
+  --ref v0.2.1
+```
+
+## Release tracking and AI/API access
+
+When `RACKPATCH_PUBLIC_REPO_URL` points at GitHub, rackpatch compares the latest upstream release or tag to:
+
+- the running control-plane version
+- each enrolled agent version
+
+That release data appears in:
+
+- `Overview`
+- `Agents`
+- `Settings`
+- `/api/v1/settings`
+- `/api/v1/context`
+
+Machine-friendly endpoints:
+
+- `/api/v1/context`: settings, release status, install commands, API paths, running jobs, pending approvals, and supported job kinds
+- `/api/v1/job-kinds`: job form metadata
+- `/api/v1/jobs`: recent jobs
+- `/api/v1/jobs/<job-id>/events`: job logs
+- `/api/v1/settings`: public repo and Telegram settings
+
+If you need browser access from another origin, set `RACKPATCH_CORS_ORIGINS` to a comma-separated allowlist. The default posture is same-origin only.
+
+## Telegram control
+
+Configure the bot token and allowed chat IDs in `Settings`, then use commands such as:
 
 ```text
 /status
@@ -103,145 +202,76 @@ rackpatch now uses page-style navigation instead of one long dashboard:
 /job <kind> <target_type> <target_ref> {"executor":"auto"}
 ```
 
-## Site Overlays
-
-Tracked defaults use the example overlay:
-
-- `OPS_SITE_NAME=example`
-- `OPS_SITE_ROOT=/workspace/sites/example`
-
-Start from the example files:
-
-```bash
-cp -R sites/example sites/local
-```
-
-Then point your local `.env` at your private overlay:
-
-```dotenv
-OPS_SITE_NAME=local
-OPS_SITE_ROOT=/workspace/sites/local
-```
-
-Keep `sites/local` private. It is ignored by git.
-
-## Public Repo Safety
+## Public repo safety
 
 - Commit `.env.example`, never `.env`.
-- Keep your real inventory, stacks, and maintenance policy in `sites/local`, not in tracked example files.
-- Runtime data, backups, local secrets, key material, and generated state are ignored by `.gitignore`.
-- For a public GitHub repo, `.env` is acceptable for local bootstrap on a private host, but long-lived shared secrets should move to Docker secrets or another secret manager before broad distribution.
-- Rotate any tokens or passwords from your current local `.env` before your first public push.
+- Keep real inventory, stacks, and maintenance policy in a private `sites/<name>` overlay, not in tracked example files.
+- Runtime data, backups, secrets, key material, and generated state are ignored by both `.gitignore` and `.dockerignore`.
+- Run `make release-check` before pushing a public branch. It fails if tracked files include `.env`, key material, `secrets/`, or non-example site overlays.
+- Rotate any tokens or passwords from your current local `.env` before the first public push.
 
-## GitHub Publishing
+## Release flow for v0.2.1
 
-The repo URL for this project is:
-
-- `https://github.com/SchmidtCode/rackpatch`
-
-Use these values in your local `.env`:
-
-```dotenv
-OPS_PUBLIC_BASE_URL=http://YOUR-OPS-HOST:3011
-OPS_PUBLIC_REPO_URL=https://github.com/SchmidtCode/rackpatch.git
-OPS_PUBLIC_REPO_REF=main
-OPS_PUBLIC_INSTALL_SCRIPT_URL=
-```
-
-`OPS_PUBLIC_INSTALL_SCRIPT_URL` is optional. If left blank and `OPS_PUBLIC_REPO_URL` is a GitHub repo URL, rackpatch derives:
-
-```text
-https://raw.githubusercontent.com/<owner>/<repo>/<ref>/scripts/install-agent.sh
-```
-
-Rebuild the API and web services so the enrollment commands use the latest public repo settings:
-
-```bash
-docker compose up -d --build ops-api ops-web ops-telegram
-```
-
-If `origin` already exists, do not add it again. Check it with:
+If `origin` is already configured, confirm it first:
 
 ```bash
 git remote -v
 ```
 
-For the `v0.2.0` release, use a normal branch-to-PR flow instead of force-pushing `main`:
+Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.2.0
-git push -u origin release/v0.2.0
+git switch -c release/v0.2.1
+git push -u origin release/v0.2.1
 ```
 
-Open a pull request from `release/v0.2.0` into `main`, then after merge:
+Open a pull request from `release/v0.2.1` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "v0.2.1"
+git push origin v0.2.1
 ```
 
 Suggested GitHub release notes:
 
-- Broke the UI into page-based views.
-- Added a mobile-friendly version of the web UI.
-- Added seeded sample schedules for common maintenance flows.
-- Added Telegram notifications for approvals and job outcomes.
+- Page-based UI with mobile-friendly layouts.
+- Telegram notifications for approvals and job completion results.
+- Backend-generated install/update commands and job-kind metadata.
+- Machine-readable control-plane context for AI operators.
+- GitHub release tracking for the stack and enrolled agents.
+- Safer public GitHub publishing with `make release-check`.
 
-## Agent Enrollment
-
-The UI `Settings` page shows the exact one-line install commands based on:
-
-- `OPS_PUBLIC_BASE_URL`
-- `OPS_PUBLIC_REPO_URL`
-- `OPS_PUBLIC_REPO_REF`
-- `OPS_PUBLIC_AGENT_COMPOSE_DIR`
-- the current bootstrap token
-
-Manual example:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | bash -s -- \
-  --server-url http://YOUR-OPS-HOST:3011 \
-  --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
-  --mode container \
-  --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref main
-```
-
-Current agent packaging options:
-
-- container mode: installs under `/opt/rackpatch-agent` and starts a compose-managed `rackpatch-agent`
-- systemd mode: installs under `/opt/rackpatch-agent` and starts `rackpatch-agent.service`
-- Docker Compose mode: shows a copy/paste example that creates `compose.yml` under the configured compose directory and starts the agent with `docker compose`
-
-## Layout
-
-- `app/api/main.py`: FastAPI backend
-- `app/worker/main.py`: job runner and schedule loop
-- `app/agent/main.py`: polling agent
-- `app/telegrambot/main.py`: Telegram control bot
-- `app/notify/main.py`: optional notifier
-- `web/index.html`: rackpatch UI shell
-- `sites/example`: public example site
-
-## Common Commands
+## Helpful commands
 
 ```bash
 make up
 make logs
 make worker-logs
 make validate
+make release-check
 make rollback STACK=dashboard
 make backup-legacy
+```
+
+## Repository layout
+
+```text
+app/         Python services
+web/         static UI
+scripts/     release, validation, and operator utilities
+playbooks/   Ansible playbooks
+roles/       Ansible roles
+sites/       example and private site overlays
+data/        runtime state, backups, and job artifacts
 ```
 
 ## Notes
 
 - Schedules are seeded from the site overlay and remain disabled by default until explicitly enabled in the UI or Telegram.
 - Job backups and rollback artifacts are written under `data/backups`.
-- `ops-telegram` idles until a bot token is configured.
-- `ops-notify` is optional and only sends Telegram messages if a bot token and chat IDs are configured.
+- `telegram` idles until a bot token is configured.
+- `notify` is optional and only sends Telegram messages when a bot token and chat IDs are configured.

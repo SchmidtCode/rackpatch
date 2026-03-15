@@ -16,15 +16,29 @@ import requests
 from common import config
 
 
-SERVER_URL = os.environ.get("OPS_SERVER_URL", "http://localhost:9080").rstrip("/")
-STATE_DIR = Path(os.environ.get("OPS_AGENT_STATE_DIR", "/var/lib/ops-agent"))
+SERVER_URL = config.env("RACKPATCH_SERVER_URL", "http://localhost:9080", "OPS_SERVER_URL").rstrip("/")
+STATE_DIR = Path(config.env("RACKPATCH_AGENT_STATE_DIR", "/var/lib/rackpatch-agent", "OPS_AGENT_STATE_DIR"))
 STATE_FILE = STATE_DIR / "agent.json"
-BOOTSTRAP_TOKEN = os.environ.get("OPS_AGENT_BOOTSTRAP_TOKEN", "")
-AGENT_NAME = os.environ.get("OPS_AGENT_NAME", socket.gethostname())
-DISPLAY_NAME = os.environ.get("OPS_AGENT_DISPLAY_NAME", AGENT_NAME)
-AGENT_MODE = os.environ.get("OPS_AGENT_MODE", "systemd")
-AGENT_LABELS = [item.strip() for item in os.environ.get("OPS_AGENT_LABELS", "").split(",") if item.strip()]
-AGENT_VERSION = os.environ.get("OPS_AGENT_VERSION", config.APP_VERSION)
+BOOTSTRAP_TOKEN = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "", "OPS_AGENT_BOOTSTRAP_TOKEN")
+AGENT_NAME = config.env("RACKPATCH_AGENT_NAME", socket.gethostname(), "OPS_AGENT_NAME")
+DISPLAY_NAME = config.env("RACKPATCH_AGENT_DISPLAY_NAME", AGENT_NAME, "OPS_AGENT_DISPLAY_NAME")
+AGENT_MODE = config.env("RACKPATCH_AGENT_MODE", "systemd", "OPS_AGENT_MODE")
+AGENT_LABELS = [
+    item.strip()
+    for item in config.env("RACKPATCH_AGENT_LABELS", "", "OPS_AGENT_LABELS").split(",")
+    if item.strip()
+]
+AGENT_VERSION = config.env("RACKPATCH_AGENT_VERSION", config.APP_VERSION, "OPS_AGENT_VERSION")
+AGENT_INSTALL_DIR = config.env("RACKPATCH_AGENT_INSTALL_DIR", "", "OPS_AGENT_INSTALL_DIR")
+AGENT_COMPOSE_DIR = config.env("RACKPATCH_AGENT_COMPOSE_DIR", "", "OPS_AGENT_COMPOSE_DIR")
+COMPOSE_DISCOVERY_TTL_SECONDS = int(
+    config.env("RACKPATCH_AGENT_COMPOSE_DISCOVERY_TTL", "300", "OPS_AGENT_COMPOSE_DISCOVERY_TTL")
+)
+
+_compose_discovery_cache: dict[str, Any] = {
+    "captured_at": 0.0,
+    "projects": [],
+}
 
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": f"rackpatch-agent/{AGENT_VERSION}"})
@@ -46,6 +60,7 @@ def capabilities() -> list[str]:
     if shutil.which("docker"):
         caps.add("docker")
         caps.add("docker-exec")
+        caps.add("docker-compose-discovery")
     if shutil.which("sudo"):
         caps.add("sudo-packages")
     if Path("/etc/pve").exists():
@@ -69,6 +84,8 @@ def register() -> dict[str, Any]:
                 "python": sys.version.split()[0],
                 "mode": AGENT_MODE,
                 "hostname": socket.gethostname(),
+                "install_dir": AGENT_INSTALL_DIR,
+                "compose_dir": AGENT_COMPOSE_DIR,
             },
         },
         timeout=30,
@@ -96,16 +113,112 @@ def agent_headers(state: dict[str, Any]) -> dict[str, str]:
     return {"X-Ops-Agent-Secret": state["agent_secret"]}
 
 
+def _run_json_command(command: list[str]) -> Any:
+    rc, stdout = run_command(command)
+    if rc != 0:
+        raise RuntimeError(stdout or f"command failed: {' '.join(command)}")
+    return json.loads(stdout)
+
+
+def discover_compose_projects() -> list[dict[str, Any]]:
+    if not shutil.which("docker"):
+        return []
+
+    rc, container_ids_raw = run_command(
+        ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project"]
+    )
+    if rc != 0:
+        return []
+
+    container_ids = [item.strip() for item in container_ids_raw.splitlines() if item.strip()]
+    if not container_ids:
+        return []
+
+    try:
+        payload = _run_json_command(["docker", "inspect", *container_ids])
+    except Exception:  # noqa: BLE001
+        return []
+
+    projects: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for container in payload:
+        labels = ((container.get("Config") or {}).get("Labels") or {})
+        project_name = str(labels.get("com.docker.compose.project") or "").strip()
+        project_dir = str(labels.get("com.docker.compose.project.working_dir") or "").strip()
+        config_files_raw = str(labels.get("com.docker.compose.project.config_files") or "").strip()
+        if not project_name or not project_dir:
+            continue
+
+        config_files = [item.strip() for item in config_files_raw.split(",") if item.strip()]
+        key = (project_name, project_dir, ",".join(config_files))
+        project = projects.setdefault(
+            key,
+            {
+                "project_name": project_name,
+                "project_dir": project_dir,
+                "config_files": config_files,
+                "compose_env_files": [".env"] if Path(project_dir, ".env").exists() else [],
+                "services": [],
+            },
+        )
+        project["services"].append(
+            {
+                "service": str(labels.get("com.docker.compose.service") or "").strip(),
+                "container_name": str(container.get("Name") or "").lstrip("/"),
+                "image": str((container.get("Config") or {}).get("Image") or "").strip(),
+                "state": str((container.get("State") or {}).get("Status") or "").strip(),
+            }
+        )
+
+    return sorted(
+        (
+            {
+                **project,
+                "services": sorted(
+                    project["services"],
+                    key=lambda service: (service.get("service") or service.get("container_name") or ""),
+                ),
+            }
+            for project in projects.values()
+        ),
+        key=lambda project: (project["project_name"], project["project_dir"]),
+    )
+
+
+def compose_projects_metadata() -> list[dict[str, Any]]:
+    now = time.time()
+    cached_at = float(_compose_discovery_cache.get("captured_at") or 0.0)
+    if now - cached_at < COMPOSE_DISCOVERY_TTL_SECONDS:
+        return list(_compose_discovery_cache.get("projects") or [])
+
+    projects = discover_compose_projects()
+    _compose_discovery_cache["captured_at"] = now
+    _compose_discovery_cache["projects"] = projects
+    return list(projects)
+
+
+def heartbeat_metadata() -> dict[str, Any]:
+    metadata = {
+        "capabilities": capabilities(),
+        "mode": AGENT_MODE,
+    }
+    if AGENT_INSTALL_DIR:
+        metadata["install_dir"] = AGENT_INSTALL_DIR
+    if AGENT_COMPOSE_DIR:
+        metadata["compose_dir"] = AGENT_COMPOSE_DIR
+    if shutil.which("docker"):
+        metadata["docker"] = {
+            "compose_projects": compose_projects_metadata(),
+        }
+    return metadata
+
+
 def heartbeat(state: dict[str, Any]) -> None:
     SESSION.post(
         f"{SERVER_URL}/api/v1/agents/heartbeat",
         headers=agent_headers(state),
         json={
             "agent_id": state["agent_id"],
-            "metadata": {
-                "capabilities": capabilities(),
-                "mode": AGENT_MODE,
-            },
+            "metadata": heartbeat_metadata(),
         },
         timeout=30,
     ).raise_for_status()

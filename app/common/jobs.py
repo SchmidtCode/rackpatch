@@ -4,13 +4,15 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from common import config, db, notify, site
+from common import config, db, job_catalog, notify, site
 
 
 # Route only lightweight read-only checks through agents. Update execution stays on the
 # worker path so stack backups, snapshots, and ordered playbooks are not bypassed.
 AGENT_JOB_KINDS = {"package_check"}
 APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
+VALID_EXECUTORS = {"worker", "agent", "auto"}
+CANCELLABLE_STATUSES = {"queued", "pending_approval"}
 
 
 def now_iso() -> str:
@@ -82,8 +84,18 @@ def create_job(
     requested_by: str,
     source: str = "ui",
 ) -> dict[str, Any]:
+    kind_metadata = job_catalog.get_job_kind(kind)
+    if not kind_metadata:
+        raise ValueError(f"unsupported job kind: {kind}")
+    expected_target_type = str(kind_metadata["target_type"])
+    if target_type != expected_target_type:
+        raise ValueError(f"{kind} jobs must target {expected_target_type}, not {target_type}")
+
     requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
-    executor = payload.get("executor", "worker")
+    executor = str(payload.get("executor", "worker")).strip() or "worker"
+    if executor not in VALID_EXECUTORS:
+        allowed = ", ".join(sorted(VALID_EXECUTORS))
+        raise ValueError(f"invalid executor {executor!r}; expected one of: {allowed}")
     target_agent_id = None
     if executor == "auto":
         target_agent_id = resolve_agent_id(target_type, target_ref, payload)
@@ -126,6 +138,32 @@ def create_job(
     append_event(str(job["id"]), f"[{now_iso()}] job created kind={kind} executor={executor} target={target_ref}")
     if requires_approval:
         notify.send_job_event(job, "pending")
+    return job
+
+
+def cancel_job(job_id: str, username: str) -> dict[str, Any] | None:
+    result = {"cancelled_by": username, "reason": "cancelled from control plane"}
+    with db.db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs
+            SET status = 'cancelled',
+                approval_status = CASE
+                    WHEN approval_status = 'pending' THEN 'cancelled'
+                    ELSE approval_status
+                END,
+                result = %s,
+                finished_at = NOW()
+            WHERE id = %s
+              AND status = ANY(%s)
+            RETURNING *
+            """,
+            (json.dumps(result), job_id, list(CANCELLABLE_STATUSES)),
+        )
+        job = cur.fetchone()
+    if job:
+        append_event(job_id, f"[{now_iso()}] job cancelled by {username}")
+        notify.send_job_event(job, "cancelled", result)
     return job
 
 

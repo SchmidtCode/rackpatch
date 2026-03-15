@@ -11,10 +11,16 @@ import requests
 from common import config, db, runtime_settings
 
 
-OPS_API_BASE = os.environ.get("OPS_API_BASE", "http://ops-api:9080").rstrip("/")
-OFFSET_FILE = Path(os.environ.get("OPS_TELEGRAM_OFFSET_FILE", str(config.DATA_ROOT / "telegram-offset.txt")))
-POLL_TIMEOUT = int(os.environ.get("OPS_TELEGRAM_POLL_TIMEOUT", "25"))
-IDLE_SLEEP_SECONDS = float(os.environ.get("OPS_TELEGRAM_IDLE_SLEEP", "5"))
+API_BASE = config.env("RACKPATCH_API_BASE", "http://api:9080", "OPS_API_BASE").rstrip("/")
+OFFSET_FILE = Path(
+    config.env(
+        "RACKPATCH_TELEGRAM_OFFSET_FILE",
+        str(config.DATA_ROOT / "telegram-offset.txt"),
+        "OPS_TELEGRAM_OFFSET_FILE",
+    )
+)
+POLL_TIMEOUT = int(config.env("RACKPATCH_TELEGRAM_POLL_TIMEOUT", "25", "OPS_TELEGRAM_POLL_TIMEOUT"))
+IDLE_SLEEP_SECONDS = float(config.env("RACKPATCH_TELEGRAM_IDLE_SLEEP", "5", "OPS_TELEGRAM_IDLE_SLEEP"))
 
 API_SESSION = requests.Session()
 API_SESSION.headers.update({"User-Agent": f"rackpatch-telegram/{config.APP_VERSION}"})
@@ -74,7 +80,7 @@ def ensure_api_token(force: bool = False) -> str:
     if STATE["api_token"] and not force:
         return STATE["api_token"]
     response = API_SESSION.post(
-        f"{OPS_API_BASE}/api/v1/auth/login",
+        f"{API_BASE}/api/v1/auth/login",
         json={
             "username": config.ADMIN_USERNAME,
             "password": config.ADMIN_PASSWORD,
@@ -90,7 +96,7 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None, *
     token = ensure_api_token()
     response = API_SESSION.request(
         method,
-        f"{OPS_API_BASE}{path}",
+        f"{API_BASE}{path}",
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -102,7 +108,7 @@ def api_request(method: str, path: str, payload: dict[str, Any] | None = None, *
         token = ensure_api_token(force=True)
         response = API_SESSION.request(
             method,
-            f"{OPS_API_BASE}{path}",
+            f"{API_BASE}{path}",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -355,7 +361,7 @@ def handle_proxmox_reboot(target: str, mode: str) -> str:
 def handle_backup(target: str) -> str:
     result = queue_job(
         "backup",
-        "host",
+        "volume",
         target,
         {
             "executor": "worker",

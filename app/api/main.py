@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import json
+import socket
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from common import auth, config, db, jobs, notify, runtime_settings, site
+from common import auth, config, control_plane, db, job_catalog, jobs, notify, releases, runtime_settings, site
 
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if config.CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.on_event("startup")
@@ -35,6 +38,107 @@ def _validate_agent_secret(agent_id: str, provided: str | None) -> None:
     row = db.fetch_one("SELECT secret_hash FROM agents WHERE id = %s", (agent_id,))
     if not row or row["secret_hash"] != auth.hash_token(provided):
         raise HTTPException(status_code=401, detail="invalid agent secret")
+
+
+def _normalize_host_identity(value: Any) -> str:
+    return str(value or "").strip().lower().strip("[]")
+
+
+def _public_base_host_identities(public_settings: dict[str, Any]) -> set[str]:
+    hostname = _normalize_host_identity(urlparse(str(public_settings.get("base_url") or "")).hostname)
+    if not hostname:
+        return set()
+    identities = {hostname}
+    try:
+        for family, socktype, proto, canonname, sockaddr in socket.getaddrinfo(hostname, None):
+            del family, socktype, proto, canonname
+            address = _normalize_host_identity(str(sockaddr[0]).split("%", 1)[0])
+            if address:
+                identities.add(address)
+    except OSError:
+        pass
+    return identities
+
+
+def _is_control_plane_host(host: dict[str, Any], base_identities: set[str]) -> bool:
+    if bool(host.get("rackpatch_control_plane")) or bool(host.get("control_plane")):
+        return True
+    host_identities = {
+        _normalize_host_identity(host.get("name")),
+        _normalize_host_identity(host.get("ansible_host")),
+        _normalize_host_identity(host.get("inventory_hostname")),
+        _normalize_host_identity(host.get("ansible_hostname")),
+    }
+    host_identities.discard("")
+    return bool(base_identities & host_identities)
+
+
+def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control_plane_host: bool) -> dict[str, str]:
+    if agent:
+        return {
+            "status": str(agent.get("status") or "unknown"),
+            "detail": str(agent.get("display_name") or agent.get("name") or "Agent enrolled"),
+        }
+    if control_plane_host:
+        return {
+            "status": "Online",
+            "detail": "Rackpatch control plane host. Agent optional.",
+        }
+    return {
+        "status": "Worker-routed",
+        "detail": "Agent optional. Worker and inventory jobs still available.",
+    }
+
+
+def _job_summary_rows(where_sql: str = "", params: tuple[Any, ...] = (), limit: int = 20) -> list[dict[str, Any]]:
+    return db.fetch_all(
+        f"""
+        SELECT id, kind, status, source, target_type, target_ref, executor, requested_by,
+               approval_status, approved_by, target_agent_id, created_at, queued_at,
+               started_at, finished_at
+        FROM jobs
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT {int(limit)}
+        """,
+        params,
+    )
+
+
+def _settings_payload() -> dict[str, Any]:
+    bootstrap_token = auth.ensure_bootstrap_token()
+    public_settings = runtime_settings.get_public_settings()
+    telegram_settings = runtime_settings.get_telegram_settings()
+    agents = db.fetch_all(
+        """
+        SELECT id, name, display_name, transport, platform, version, capabilities, labels,
+               metadata, status, last_seen_at, created_at, updated_at
+        FROM agents
+        ORDER BY name
+        """
+    )
+    return {
+        "ui": {
+            "app_name": config.APP_NAME,
+            "app_version": config.APP_VERSION,
+        },
+        "site_name": config.SITE_NAME,
+        "site_root": str(site.site_root()),
+        "inventory_path": str(site.inventory_path()),
+        "stacks_path": str(site.stacks_path()),
+        "maintenance_path": str(site.maintenance_path()),
+        "paths": {
+            "site_root": str(site.site_root()),
+            "inventory": str(site.inventory_path()),
+            "stacks": str(site.stacks_path()),
+            "maintenance": str(site.maintenance_path()),
+        },
+        "public": public_settings,
+        "telegram": telegram_settings,
+        "default_agent_bootstrap_token": bootstrap_token,
+        "agent_install": control_plane.build_agent_install_commands(public_settings, bootstrap_token),
+        "release": releases.build_release_status(public_settings, agents),
+    }
 
 
 @app.get("/health")
@@ -80,6 +184,12 @@ def overview(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     }
 
 
+@app.get("/api/v1/job-kinds")
+def list_job_kinds(username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    return {"items": job_catalog.list_job_kinds()}
+
+
 @app.get("/api/v1/stacks")
 def stacks(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
@@ -89,6 +199,8 @@ def stacks(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 @app.get("/api/v1/hosts")
 def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
+    public_settings = runtime_settings.get_public_settings()
+    base_identities = _public_base_host_identities(public_settings)
     known_agents = {
         row["name"]: row
         for row in db.fetch_all(
@@ -98,10 +210,13 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     items = []
     for host in site.load_hosts():
         agent = known_agents.get(host["name"])
+        control_plane_host = _is_control_plane_host(host, base_identities)
         items.append(
             {
                 **host,
                 "agent": agent,
+                "control_plane_host": control_plane_host,
+                "runtime": _host_runtime(agent, host, control_plane_host=control_plane_host),
             }
         )
     return {"items": items}
@@ -110,16 +225,41 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 @app.get("/api/v1/agents")
 def agents(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
-    return {
-        "items": db.fetch_all(
-            """
-            SELECT id, name, display_name, transport, platform, version, capabilities, labels,
-                   metadata, status, last_seen_at, created_at, updated_at
-            FROM agents
-            ORDER BY name
-            """
+    public_settings = runtime_settings.get_public_settings()
+    items = db.fetch_all(
+        """
+        SELECT id, name, display_name, transport, platform, version, capabilities, labels,
+               metadata, status, last_seen_at, created_at, updated_at
+        FROM agents
+        ORDER BY name
+        """
+    )
+    release_payload = releases.build_release_status(public_settings, items)
+    latest_version = str((release_payload.get("latest") or {}).get("version") or "")
+    latest_ref = latest_version or str(public_settings.get("repo_ref") or "")
+    agent_items = []
+    for item in items:
+        metadata = item.get("metadata") or {}
+        mode = str(metadata.get("mode") or "unknown")
+        release_state = releases.compare_versions(str(item.get("version") or ""), latest_version)
+        update_command = ""
+        if mode in {"compose", "container", "systemd"}:
+            update_command = control_plane.build_agent_update_command(
+                public_settings,
+                latest_ref,
+                mode,
+                compose_dir=str(metadata.get("compose_dir") or ""),
+                install_dir=str(metadata.get("install_dir") or ""),
+            )
+        agent_items.append(
+            {
+                **item,
+                "release_state": release_state,
+                "update_mode": mode,
+                "update_command": update_command,
+            }
         )
-    }
+    return {"items": agent_items}
 
 
 @app.get("/api/v1/jobs")
@@ -185,6 +325,14 @@ def approve(job_id: str, username: str = Depends(auth.require_user)) -> dict[str
     row = jobs.approve_job(job_id, username)
     if not row:
         raise HTTPException(status_code=404, detail="approval not found or already resolved")
+    return row
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def cancel(job_id: str, username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    row = jobs.cancel_job(job_id, username)
+    if not row:
+        raise HTTPException(status_code=409, detail="job cannot be cancelled in its current state")
     return row
 
 
@@ -258,41 +406,22 @@ def toggle_schedule(schedule_id: str, payload: dict[str, Any], username: str = D
 @app.get("/api/v1/settings")
 def settings(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
-    bootstrap_token = auth.ensure_bootstrap_token()
-    public_settings = runtime_settings.get_public_settings()
-    telegram_settings = runtime_settings.get_telegram_settings()
+    return _settings_payload()
+
+
+@app.get("/api/v1/context")
+def context(username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    settings_payload = _settings_payload()
     return {
-        "ui": {
-            "app_name": config.APP_NAME,
-            "app_version": config.APP_VERSION,
-        },
-        "site_name": config.SITE_NAME,
-        "site_root": str(site.site_root()),
-        "inventory_path": str(site.inventory_path()),
-        "stacks_path": str(site.stacks_path()),
-        "maintenance_path": str(site.maintenance_path()),
-        "paths": {
-            "site_root": str(site.site_root()),
-            "inventory": str(site.inventory_path()),
-            "stacks": str(site.stacks_path()),
-            "maintenance": str(site.maintenance_path()),
-        },
-        "public": public_settings,
-        "telegram": telegram_settings,
-        "default_agent_bootstrap_token": bootstrap_token,
-        "agent_install": {
-            "container": (
-                f"curl -fsSL {public_settings['install_script_url']} | bash -s -- "
-                f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
-                f"--mode container --install-source {public_settings['repo_url']} "
-                f"--install-ref {public_settings['repo_ref']}"
-            ),
-            "systemd": (
-                f"curl -fsSL {public_settings['install_script_url']} | bash -s -- "
-                f"--server-url {public_settings['base_url']} --bootstrap-token {bootstrap_token} "
-                f"--mode systemd --install-source {public_settings['repo_url']} "
-                f"--install-ref {public_settings['repo_ref']}"
-            ),
+        "settings": settings_payload,
+        "release": settings_payload["release"],
+        "job_kinds": job_catalog.list_job_kinds(),
+        "api": control_plane.build_api_surface(settings_payload["public"]),
+        "jobs": {
+            "running": _job_summary_rows("WHERE status = 'running'"),
+            "pending_approvals": _job_summary_rows("WHERE approval_status = 'pending'"),
+            "recent": _job_summary_rows(limit=12),
         },
     }
 
@@ -301,21 +430,21 @@ def settings(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 def update_public_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     runtime_settings.set_public_settings(payload)
-    return settings("_internal")
+    return _settings_payload()
 
 
 @app.post("/api/v1/settings/telegram")
 def update_telegram_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     runtime_settings.set_telegram_settings(payload)
-    return settings("_internal")
+    return _settings_payload()
 
 
 @app.post("/api/v1/settings/agent-tokens")
 def create_agent_token(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     label = str(payload.get("label", "manual-token")).strip()
-    token = auth.random_token("ops-agent-")
+    token = auth.random_token("rackpatch-agent-")
     with db.db_cursor() as cur:
         cur.execute(
             "INSERT INTO agent_tokens (label, token_hash) VALUES (%s, %s) RETURNING id, label, created_at",
@@ -323,6 +452,7 @@ def create_agent_token(payload: dict[str, Any], username: str = Depends(auth.req
         )
         row = cur.fetchone()
     row["token"] = token
+    row["agent_install"] = control_plane.build_agent_install_commands(runtime_settings.get_public_settings(), token)
     return row
 
 
@@ -344,7 +474,7 @@ def register_agent(
     if not name:
         raise HTTPException(status_code=400, detail="agent name is required")
 
-    secret = auth.random_token("ops-secret-")
+    secret = auth.random_token("rackpatch-secret-")
     with db.db_cursor() as cur:
         cur.execute(
             """

@@ -142,7 +142,7 @@ def init_db() -> None:
                         "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
                         (config.ADMIN_USERNAME, auth.hash_password(config.ADMIN_PASSWORD)),
                     )
-                configured_token = os.environ.get("OPS_AGENT_BOOTSTRAP_TOKEN", "")
+                configured_token = config.env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "", "OPS_AGENT_BOOTSTRAP_TOKEN")
                 if configured_token and configured_token != "bootstrap-me":
                     bootstrap_token = configured_token
                 else:
@@ -152,7 +152,7 @@ def init_db() -> None:
                     if stored_token:
                         bootstrap_token = str(stored_token)
                     else:
-                        bootstrap_token = auth.random_token("ops-bootstrap-")
+                        bootstrap_token = auth.random_token("rackpatch-bootstrap-")
                         cur.execute(
                             """
                             INSERT INTO settings (key, value, updated_at)
@@ -163,6 +163,7 @@ def init_db() -> None:
                             """,
                             (json.dumps({"token": bootstrap_token}),),
                         )
+                os.environ["RACKPATCH_AGENT_BOOTSTRAP_TOKEN"] = bootstrap_token
                 os.environ["OPS_AGENT_BOOTSTRAP_TOKEN"] = bootstrap_token
                 bootstrap_hash = auth.hash_token(bootstrap_token)
                 cur.execute(

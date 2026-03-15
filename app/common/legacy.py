@@ -10,6 +10,7 @@ from common import config, jobs, site
 
 
 def runtime_env() -> dict[str, str]:
+    group_vars = site.load_group_vars()
     env = os.environ.copy()
     env.update(
         {
@@ -18,6 +19,7 @@ def runtime_env() -> dict[str, str]:
             "OPS_SITE_ROOT": str(site.site_root()),
             "OPS_STACKS_FILE": str(site.stacks_path()),
             "OPS_INVENTORY_FILE": str(site.inventory_path()),
+            "OPS_ROLLBACK_ROOT": str(group_vars.get("rollback_root", "/data/rollbacks")),
         }
     )
     return env
@@ -60,6 +62,32 @@ def artifacts_from_output(output: str) -> list[dict[str, str]]:
     return artifacts
 
 
+def summarize_docker_update(payload: dict[str, Any], target_ref: str) -> dict[str, Any]:
+    command = ["python3", "scripts/summarize_docker_update.py"]
+    selected_stacks = list(payload.get("selected_stacks") or [])
+    if selected_stacks:
+        for stack_name in selected_stacks:
+            command.extend(["--stack", stack_name])
+    else:
+        command.extend(["--window", payload.get("window", "approve")])
+
+    result = subprocess.run(
+        command,
+        cwd="/workspace",
+        env=runtime_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "docker update summary failed"
+        raise RuntimeError(message)
+    parsed = json.loads(result.stdout)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("docker update summary returned a non-object payload")
+    return parsed
+
+
 def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[str]:
     inventory = str(site.inventory_path())
     stacks_file = str(site.stacks_path())
@@ -71,7 +99,10 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
             command.extend(["--stack", name])
         return command
     if kind == "docker_update":
-        selected = json.dumps(payload.get("selected_stacks", [target_ref] if target_ref != "all" else []))
+        selected = json.dumps(
+            payload.get("selected_stacks", [target_ref] if target_ref != "all" else []),
+            separators=(",", ":"),
+        )
         command = [
             "ansible-playbook",
             "playbooks/apply_docker_updates.yml",
@@ -82,7 +113,9 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
             "-e",
             f"dry_run={dry_run}",
         ]
-        if target_ref == "all":
+        if payload.get("selected_stacks"):
+            command.extend(["-e", f"selected_stacks={selected}"])
+        elif target_ref == "all":
             command.extend(["-e", f"target_window={payload.get('window', 'approve')}"])
         else:
             command.extend(["-e", f"selected_stacks={selected}"])
@@ -165,4 +198,3 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
             target_ref,
         ]
     raise ValueError(f"unsupported job kind: {kind}")
-

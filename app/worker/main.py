@@ -108,6 +108,12 @@ def execute_job(job: dict) -> None:
     artifacts = legacy.artifacts_from_output(result.get("stdout", ""))
     status = "completed" if result["exit_code"] == 0 else "failed"
     final_result = {"command": command, "artifacts": artifacts, **result}
+    if job["kind"] == "docker_update" and result["exit_code"] == 0 and not payload.get("dry_run", False):
+        try:
+            final_result["update_summary"] = legacy.summarize_docker_update(payload, job["target_ref"])
+        except Exception as exc:  # noqa: BLE001
+            jobs.append_event(job_id, f"docker update summary unavailable: {exc}", stream="stderr")
+            final_result["update_summary_error"] = str(exc)
     jobs.set_job_status(job_id, status, result=final_result)
     for artifact in artifacts:
         jobs.record_backup(
@@ -134,7 +140,7 @@ def execute_job(job: dict) -> None:
 
 def main() -> int:
     db.init_db()
-    print("ops-worker started", flush=True)
+    print("rackpatch-worker started", flush=True)
     schedule_tick = 0.0
     while True:
         now_monotonic = time.monotonic()

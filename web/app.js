@@ -3,6 +3,9 @@ const state = {
   selectedJob: null,
   currentPage: "overview",
   installPreviewMode: "compose",
+  jobFormKind: null,
+  jobOptionValues: {},
+  jobLogExpanded: false,
   data: null,
   flashTimer: null,
 };
@@ -29,6 +32,64 @@ const jobEvents = document.getElementById("job-events");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const siteChip = document.getElementById("site-chip");
+const jobLogPanel = document.getElementById("job-log-panel");
+const jobLogExpandButton = document.getElementById("job-log-expand");
+const jobKindSelect = document.getElementById("job-kind");
+const jobTargetSummary = document.getElementById("job-target-summary");
+const jobStackPicker = document.getElementById("job-stack-picker");
+const jobStackToggle = document.getElementById("job-stack-toggle");
+const jobStackMenu = document.getElementById("job-stack-menu");
+const jobStackOptions = document.getElementById("job-stack-options");
+const jobStackStatus = document.getElementById("job-stack-status");
+const jobHostPicker = document.getElementById("job-host-picker");
+const jobHostToggle = document.getElementById("job-host-toggle");
+const jobHostMenu = document.getElementById("job-host-menu");
+const jobHostOptions = document.getElementById("job-host-options");
+const jobHostStatus = document.getElementById("job-host-status");
+const jobManualTargetWrap = document.getElementById("job-manual-target-wrap");
+const jobManualTargetLabel = document.getElementById("job-manual-target-label");
+const jobManualTargetInput = document.getElementById("job-manual-target");
+const jobOptions = document.getElementById("job-options");
+const overviewRelease = document.getElementById("overview-release");
+const automationApi = document.getElementById("automation-api");
+const automationLive = document.getElementById("automation-live");
+const releaseStatus = document.getElementById("release-status");
+const releaseUpdateCommands = document.getElementById("release-update-commands");
+
+const FALLBACK_JOB_KIND = {
+  kind: "docker_discover",
+  label: "Docker discover",
+  mode: "stack_multi",
+  target_type: "stack",
+  summary: "Select one or more stacks to inspect.",
+  defaults: { executor: "worker", window: "all", requires_approval: false },
+  default_select_all: true,
+  fields: [],
+};
+
+function getJobKindItems() {
+  return state.data?.jobKinds?.items || state.data?.context?.job_kinds || [];
+}
+
+function populateJobKindSelect() {
+  const items = getJobKindItems();
+  if (!items.length) {
+    jobKindSelect.innerHTML = `<option value="${escapeHtml(FALLBACK_JOB_KIND.kind)}">${escapeHtml(FALLBACK_JOB_KIND.label)}</option>`;
+    jobKindSelect.disabled = true;
+    return;
+  }
+
+  const current = state.jobFormKind || jobKindSelect.value;
+  jobKindSelect.innerHTML = items
+    .map((item) => `<option value="${escapeHtml(item.kind)}">${escapeHtml(item.label || item.kind)}</option>`)
+    .join("");
+  jobKindSelect.disabled = false;
+  if (items.some((item) => item.kind === current)) {
+    jobKindSelect.value = current;
+    return;
+  }
+  jobKindSelect.value = items[0].kind;
+}
 
 function apiHeaders() {
   return state.token
@@ -97,13 +158,30 @@ function badge(value, flavor = "") {
 
 function statusBadge(status) {
   const lower = String(status || "").toLowerCase();
-  if (["completed", "online", "enabled", "approved"].includes(lower)) {
+  if (["completed", "online", "enabled", "approved", "current"].includes(lower)) {
     return badge(status, "good");
   }
-  if (["failed", "offline", "pending_approval", "pending"].includes(lower)) {
+  if (["failed", "offline", "pending_approval", "pending", "outdated"].includes(lower)) {
     return badge(status, "warn");
   }
   return badge(status, "accent");
+}
+
+function releaseLabel(value) {
+  const lower = String(value || "unknown").toLowerCase();
+  if (lower === "current") {
+    return "Current";
+  }
+  if (lower === "outdated") {
+    return "Outdated";
+  }
+  if (lower === "ahead") {
+    return "Ahead";
+  }
+  if (lower === "different") {
+    return "Different";
+  }
+  return value || "Unknown";
 }
 
 function emptyState(message = "Nothing here yet.") {
@@ -176,78 +254,444 @@ function setInputValue(id, value) {
   element.value = value;
 }
 
-function shellQuote(value) {
-  return `'${String(value ?? "").replaceAll("'", "'\"'\"'")}'`;
+function formatDockerVersion(ref, short) {
+  const refLabel = String(ref || "").trim();
+  const shortLabel = String(short || "").trim();
+  if (refLabel && shortLabel && shortLabel !== "unknown") {
+    return `${refLabel} (${shortLabel})`;
+  }
+  if (refLabel) {
+    return refLabel;
+  }
+  if (shortLabel) {
+    return shortLabel;
+  }
+  return "unknown";
 }
 
-function yamlString(value) {
-  return JSON.stringify(String(value ?? ""));
+function buildJobResultMarkup(job) {
+  const result = job?.result;
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+
+  if (job.kind === "docker_update" && result.update_summary && Array.isArray(result.update_summary.stacks)) {
+    const stacks = result.update_summary.stacks;
+    const changedStacks = stacks.filter((stack) => (stack.changed_services || 0) > 0);
+    const header = changedStacks.length
+      ? `Updated ${result.update_summary.changed_services || 0} service${(result.update_summary.changed_services || 0) === 1 ? "" : "s"} across ${changedStacks.length} stack${changedStacks.length === 1 ? "" : "s"}.`
+      : "No service image changes were detected in this docker update run.";
+    const lines = [header];
+
+    stacks.forEach((stack) => {
+      const services = Array.isArray(stack.services) ? stack.services : [];
+      if (!services.length) {
+        return;
+      }
+      services.forEach((service) => {
+        lines.push(
+          `${stack.stack}/${service.service}: ${formatDockerVersion(service.from_ref, service.from_short)} -> ${formatDockerVersion(service.to_ref, service.to_short)}`
+        );
+      });
+    });
+    return lines.map((line) => escapeHtml(line)).join("<br>");
+  }
+
+  if (result.update_summary_error) {
+    return escapeHtml(`Update summary unavailable: ${result.update_summary_error}`);
+  }
+
+  return "";
 }
 
-function buildShellInstall(settings, token, mode) {
-  return `curl -fsSL ${shellQuote(settings.public.install_script_url)} | bash -s -- --server-url ${shellQuote(settings.public.base_url)} --bootstrap-token ${shellQuote(token)} --mode ${mode} --install-source ${shellQuote(settings.public.repo_url)} --install-ref ${shellQuote(settings.public.repo_ref)}`;
+function getJobKindConfig(kind) {
+  return getJobKindItems().find((item) => item.kind === kind) || FALLBACK_JOB_KIND;
 }
 
-function buildComposeInstall(settings, token) {
-  const composeDir = settings.public.agent_compose_dir || "/srv/compose/rackpatch";
-  const composeDirQuoted = shellQuote(composeDir);
-  const srcDirQuoted = shellQuote(`${composeDir}/src`);
-  const stateDirQuoted = shellQuote(`${composeDir}/state`);
-  const composeFileQuoted = shellQuote(`${composeDir}/compose.yml`);
-  const repoUrlQuoted = shellQuote(settings.public.repo_url);
-  const repoRefQuoted = shellQuote(settings.public.repo_ref);
-  const composeFile = [
-    "services:",
-    "  rackpatch-agent:",
-    "    container_name: rackpatch-agent",
-    "    image: rackpatch-agent:local",
-    "    build:",
-    "      context: ./src",
-    "      dockerfile: Dockerfile.agent",
-    "    restart: unless-stopped",
-    "    environment:",
-    `      OPS_SERVER_URL: ${yamlString(settings.public.base_url)}`,
-    `      OPS_AGENT_BOOTSTRAP_TOKEN: ${yamlString(token)}`,
-    '      OPS_AGENT_NAME: "CHANGE_ME_TO_INVENTORY_HOSTNAME"',
-    '      OPS_AGENT_LABELS: ""',
-    '      OPS_AGENT_MODE: "container"',
-    "    volumes:",
-    "      - ./state:/var/lib/ops-agent",
-    "      - /var/run/docker.sock:/var/run/docker.sock",
-  ].join("\n");
-  return [
-    `# Docker Compose deployment`,
-    `# Target folder: ${composeDir}`,
-    `# Set OPS_AGENT_NAME to the host name rackpatch uses in inventory.`,
-    `mkdir -p ${composeDirQuoted} ${stateDirQuoted}`,
-    `if [ ! -d ${srcDirQuoted}/.git ]; then`,
-    `  git clone --depth 1 --branch ${repoRefQuoted} ${repoUrlQuoted} ${srcDirQuoted}`,
-    "else",
-    `  git -C ${srcDirQuoted} fetch --depth 1 origin ${repoRefQuoted}`,
-    `  git -C ${srcDirQuoted} checkout ${repoRefQuoted}`,
-    `  git -C ${srcDirQuoted} pull --ff-only origin ${repoRefQuoted}`,
-    "fi",
-    `cat > ${composeFileQuoted} <<'EOF'`,
-    composeFile,
-    "EOF",
-    `docker compose -f ${composeFileQuoted} up -d --build`,
-  ].join("\n");
+function getJobStacksForKind(kind) {
+  const config = getJobKindConfig(kind);
+  const stacks = [...(state.data?.stacks?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
+  if (!["stack_multi", "stack_single"].includes(config.mode)) {
+    return [];
+  }
+  return stacks;
 }
 
-function buildInstallBlocks(settings, token = settings.default_agent_bootstrap_token) {
-  return {
-    compose: buildComposeInstall(settings, token),
-    container: buildShellInstall(settings, token, "container"),
-    systemd: buildShellInstall(settings, token, "systemd"),
-  };
+function getJobHostsForKind(kind) {
+  const config = getJobKindConfig(kind);
+  const hosts = [...(state.data?.hosts?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
+  if (config.mode !== "host_multi") {
+    return [];
+  }
+  return hosts.filter((host) => {
+    const group = host.group || "";
+    const includeGroups = config.host_groups_include || [];
+    const excludeGroups = config.host_groups_exclude || [];
+    if (includeGroups.length && !includeGroups.includes(group)) {
+      return false;
+    }
+    if (excludeGroups.includes(group)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function getSelectedJobStacks() {
+  return Array.from(jobStackOptions.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+}
+
+function getSelectedJobHosts() {
+  return Array.from(jobHostOptions.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+}
+
+function getJobOptionDefinitions(kind) {
+  return getJobKindConfig(kind).fields || [];
+}
+
+function getJobOptionInputId(name) {
+  return `job-option-${name}`;
+}
+
+function getStoredJobOptionValues(kind) {
+  return state.jobOptionValues[kind] || {};
+}
+
+function getRenderedJobOptionValues(kind) {
+  const values = {};
+  getJobOptionDefinitions(kind).forEach((field) => {
+    const input = document.getElementById(getJobOptionInputId(field.name));
+    if (!input) {
+      return;
+    }
+    if (field.type === "toggle") {
+      values[field.name] = input.checked;
+      return;
+    }
+    const value = String(input.value || "").trim();
+    if (field.optional && !value) {
+      return;
+    }
+    values[field.name] = value;
+  });
+  return values;
+}
+
+function storeRenderedJobOptionValues(kind) {
+  state.jobOptionValues[kind] = getRenderedJobOptionValues(kind);
+}
+
+function renderJobOptions(kind, resetOptions = false) {
+  const config = getJobKindConfig(kind);
+  const fields = getJobOptionDefinitions(kind);
+  if (resetOptions) {
+    delete state.jobOptionValues[kind];
+  }
+  const currentValues = { ...config.defaults, ...getStoredJobOptionValues(kind) };
+
+  if (!fields.length) {
+    jobOptions.innerHTML = `<p class="hint">No extra options for this job. Use the target picker above and queue it when ready.</p>`;
+    return;
+  }
+
+  jobOptions.innerHTML = fields
+    .map((field) => {
+      const inputId = getJobOptionInputId(field.name);
+      const label = escapeHtml(field.label);
+      const hint = field.hint ? `<p class="job-option-hint">${escapeHtml(field.hint)}</p>` : "";
+      const value = currentValues[field.name];
+
+      if (field.type === "toggle") {
+        return `
+          <label class="job-option-row job-option-toggle" for="${inputId}">
+            <span class="job-option-copy">
+              <span class="job-option-label">${label}</span>
+              ${hint}
+            </span>
+            <input id="${inputId}" name="${field.name}" type="checkbox"${value ? " checked" : ""} />
+          </label>
+        `;
+      }
+
+      if (field.type === "select") {
+        const options = (field.options || [])
+          .map((option) => {
+            const selected = option.value === value ? " selected" : "";
+            return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+          })
+          .join("");
+        return `
+          <div class="job-option-row">
+            <label class="field-label" for="${inputId}">${label}</label>
+            <select id="${inputId}" name="${field.name}">${options}</select>
+            ${hint}
+          </div>
+        `;
+      }
+
+      return `
+        <div class="job-option-row">
+          <label class="field-label" for="${inputId}">${label}</label>
+          <input
+            id="${inputId}"
+            name="${field.name}"
+            type="text"
+            value="${escapeHtml(value || "")}"
+            placeholder="${escapeHtml(field.placeholder || "")}"
+          />
+          ${hint}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function setJobStackMenu(open) {
+  const nextState = typeof open === "boolean" ? open : jobStackMenu.classList.contains("hidden");
+  jobStackMenu.classList.toggle("hidden", !nextState);
+  jobStackPicker.classList.toggle("open", nextState);
+}
+
+function setJobHostMenu(open) {
+  const nextState = typeof open === "boolean" ? open : jobHostMenu.classList.contains("hidden");
+  jobHostMenu.classList.toggle("hidden", !nextState);
+  jobHostPicker.classList.toggle("open", nextState);
+}
+
+function updateJobStackSelectionState(kind) {
+  const stacks = getJobStacksForKind(kind);
+  const selected = getSelectedJobStacks();
+  const selectedPreview = selected.slice(0, 3).join(", ");
+
+  jobStackToggle.disabled = stacks.length === 0;
+  if (!stacks.length) {
+    jobStackToggle.textContent = "No stacks available";
+    jobStackStatus.textContent = "No stacks match this job type.";
+    setJobStackMenu(false);
+    return;
+  }
+
+  if (selected.length === 0) {
+    jobStackToggle.textContent = "Choose stack(s)";
+    jobStackStatus.textContent = `${stacks.length} stack${stacks.length === 1 ? "" : "s"} available.`;
+    return;
+  }
+
+  if (selected.length === stacks.length) {
+    jobStackToggle.textContent = `All ${stacks.length} stacks selected`;
+    jobStackStatus.textContent = selectedPreview;
+    return;
+  }
+
+  jobStackToggle.textContent = `${selected.length} stack${selected.length === 1 ? "" : "s"} selected`;
+  jobStackStatus.textContent =
+    selected.length > 3 ? `${selectedPreview} +${selected.length - 3} more` : selectedPreview;
+}
+
+function renderJobStackOptions(kind, preserveSelection = true) {
+  const config = getJobKindConfig(kind);
+  const stacks = getJobStacksForKind(kind);
+  const currentSelection = getSelectedJobStacks();
+  const shouldSelectAll = !preserveSelection && config.default_select_all;
+  const previousSelection = shouldSelectAll ? new Set(stacks.map((stack) => stack.name)) : new Set(currentSelection);
+
+  if (!stacks.length) {
+    jobStackOptions.innerHTML = emptyState("No matching stacks.");
+    updateJobStackSelectionState(kind);
+    return;
+  }
+
+  jobStackOptions.innerHTML = stacks
+    .map((stack) => {
+      const checked = previousSelection.has(stack.name) ? " checked" : "";
+      const stackName = escapeHtml(stack.name);
+      const host = escapeHtml(stack.host || "unknown");
+      const mode = escapeHtml(stack.update_mode || "manual");
+      return `
+        <label class="job-target-option">
+          <input type="checkbox" value="${stackName}"${checked} />
+          <span>
+            <strong>${stackName}</strong>
+            <span class="subline">${host} · ${mode}</span>
+          </span>
+        </label>
+      `;
+    })
+    .join("");
+
+  updateJobStackSelectionState(kind);
+}
+
+function updateJobHostSelectionState(kind) {
+  const hosts = getJobHostsForKind(kind);
+  const selected = getSelectedJobHosts();
+  const selectedPreview = selected.slice(0, 3).join(", ");
+
+  jobHostToggle.disabled = hosts.length === 0;
+  if (!hosts.length) {
+    jobHostToggle.textContent = "No compatible hosts";
+    jobHostStatus.textContent = "No hosts match this job type.";
+    setJobHostMenu(false);
+    return;
+  }
+
+  if (selected.length === 0) {
+    jobHostToggle.textContent = "Choose host(s)";
+    jobHostStatus.textContent = `${hosts.length} host${hosts.length === 1 ? "" : "s"} available.`;
+    return;
+  }
+
+  if (selected.length === hosts.length) {
+    jobHostToggle.textContent = `All ${hosts.length} hosts selected`;
+    jobHostStatus.textContent = selectedPreview;
+    return;
+  }
+
+  jobHostToggle.textContent = `${selected.length} host${selected.length === 1 ? "" : "s"} selected`;
+  jobHostStatus.textContent =
+    selected.length > 3 ? `${selectedPreview} +${selected.length - 3} more` : selectedPreview;
+}
+
+function renderJobHostOptions(kind, preserveSelection = true) {
+  const hosts = getJobHostsForKind(kind);
+  const previousSelection = preserveSelection ? new Set(getSelectedJobHosts()) : new Set();
+
+  if (!hosts.length) {
+    jobHostOptions.innerHTML = emptyState("No matching hosts.");
+    updateJobHostSelectionState(kind);
+    return;
+  }
+
+  jobHostOptions.innerHTML = hosts
+    .map((host) => {
+      const checked = previousSelection.has(host.name) ? " checked" : "";
+      const hostName = escapeHtml(host.name);
+      const group = escapeHtml(host.group || "all");
+      const address = escapeHtml(host.ansible_host || "n/a");
+      return `
+        <label class="job-target-option">
+          <input type="checkbox" value="${hostName}"${checked} />
+          <span>
+            <strong>${hostName}</strong>
+            <span class="subline">${group} · ${address}</span>
+          </span>
+        </label>
+      `;
+    })
+    .join("");
+
+  updateJobHostSelectionState(kind);
+}
+
+function syncJobForm(kind = jobKindSelect.value, { resetOptions = false, preserveSelection = true } = {}) {
+  const config = getJobKindConfig(kind);
+  state.jobFormKind = kind;
+  jobTargetSummary.textContent = config.summary;
+
+  const showStackPicker = ["stack_multi", "stack_single"].includes(config.mode);
+  const showHostPicker = config.mode === "host_multi";
+  const showManualTarget = config.mode === "manual";
+  jobStackPicker.classList.toggle("hidden", !showStackPicker);
+  jobHostPicker.classList.toggle("hidden", !showHostPicker);
+  jobManualTargetWrap.classList.toggle("hidden", !showManualTarget);
+
+  if (showStackPicker) {
+    renderJobStackOptions(kind, preserveSelection);
+  } else {
+    setJobStackMenu(false);
+  }
+
+  if (showHostPicker) {
+    renderJobHostOptions(kind, preserveSelection);
+  } else {
+    setJobHostMenu(false);
+  }
+
+  if (showManualTarget) {
+    jobManualTargetLabel.textContent = config.manual_label;
+    jobManualTargetInput.placeholder = config.manual_placeholder;
+  } else {
+    jobManualTargetInput.value = "";
+  }
+
+  renderJobOptions(kind, resetOptions);
+}
+
+function buildJobRequest() {
+  const kind = jobKindSelect.value;
+  const config = getJobKindConfig(kind);
+  const payload = { ...config.defaults, ...getRenderedJobOptionValues(kind) };
+  let targetRef = "";
+
+  if (config.mode === "stack_multi") {
+    const selectedStacks = getSelectedJobStacks();
+    const availableStacks = getJobStacksForKind(kind);
+    if (!selectedStacks.length) {
+      throw new Error("Select at least one stack.");
+    }
+    const selectedAll = selectedStacks.length === availableStacks.length;
+    targetRef = selectedAll ? "all" : selectedStacks.join(",");
+    if (kind === "docker_discover") {
+      if (selectedAll) {
+        delete payload.stacks;
+        payload.window = payload.window || "all";
+      } else {
+        payload.stacks = selectedStacks;
+      }
+    }
+    if (kind === "docker_update") {
+      if (selectedAll) {
+        payload.selected_stacks = availableStacks.map((stack) => stack.name);
+        payload.window = "all";
+      } else {
+        payload.selected_stacks = selectedStacks;
+      }
+    }
+  } else if (config.mode === "stack_single") {
+    const selectedStacks = getSelectedJobStacks();
+    if (selectedStacks.length !== 1) {
+      throw new Error("Select exactly one stack.");
+    }
+    targetRef = selectedStacks[0];
+  } else if (config.mode === "host_multi") {
+    const selectedHosts = getSelectedJobHosts();
+    if (!selectedHosts.length) {
+      throw new Error("Select at least one host.");
+    }
+    targetRef = selectedHosts.join(",");
+    if (kind === "package_check") {
+      payload.hosts = selectedHosts;
+    } else {
+      payload.limit = targetRef;
+    }
+  } else {
+    targetRef = jobManualTargetInput.value.trim();
+    if (!targetRef) {
+      throw new Error(`Enter a ${String(config.manual_label || "target").toLowerCase()}.`);
+    }
+    if (kind === "backup" && !payload.volume) {
+      payload.volume = targetRef;
+    }
+  }
+
+  return { kind, targetType: config.target_type, targetRef, payload };
+}
+
+function syncJobLogPanel() {
+  jobLogPanel.classList.toggle("expanded", state.jobLogExpanded);
+  jobLogExpandButton.textContent = state.jobLogExpanded ? "Collapse" : "Expand";
+}
+
+function canCancelJob(job) {
+  return ["queued", "pending_approval"].includes(job.status);
 }
 
 function renderInstallPreviews() {
   if (!state.data?.settings) {
     return;
   }
-  const blocks = buildInstallBlocks(state.data.settings);
-  const selected = blocks[state.installPreviewMode] || blocks.compose;
+  const blocks = state.data.settings.agent_install || {};
+  const selected = blocks[state.installPreviewMode] || blocks.compose || "";
   document.getElementById("overview-install").textContent = selected;
   document.getElementById("settings-install").textContent = selected;
   document.querySelectorAll("[data-install-mode]").forEach((node) => {
@@ -259,6 +703,7 @@ function renderOverview() {
   const overview = state.data.overview;
   const jobs = state.data.jobs.items;
   const approvals = jobs.filter((item) => item.approval_status === "pending");
+  const release = state.data.settings.release || {};
 
   const stats = [
     ["Agents", overview.counts.agents],
@@ -329,6 +774,16 @@ function renderOverview() {
     ),
     "No pending approvals."
   );
+  if (overviewRelease) {
+    const latest = release.latest || {};
+    const stack = release.stack || {};
+    const agentSummary = (release.agents || {}).summary || {};
+    overviewRelease.textContent = [
+      `Stack version: v${stack.current_version || "unknown"} (${releaseLabel(stack.release_state || "unknown")})`,
+      `Latest upstream: ${latest.version || "unavailable"}${latest.source ? ` via GitHub ${latest.source}` : ""}`,
+      `Agents current/outdated/unknown: ${agentSummary.current || 0}/${agentSummary.outdated || 0}/${agentSummary.unknown || 0}`,
+    ].join("\n");
+  }
   renderInstallPreviews();
 }
 
@@ -339,16 +794,22 @@ function renderStacks() {
     ["Stack", "Host", "Mode", "Risk", "Project Dir", "Actions"],
     items.map((item) => {
       const stackName = escapeHtml(item.name);
-      const host = escapeHtml(item.host || "unknown");
+      const resolvedHost = item.host === "localhost" && item.guest_host ? item.guest_host : item.host;
+      const host = escapeHtml(resolvedHost || "unknown");
       const updateMode = badge(item.update_mode || "manual", "accent");
       const risk = badge(item.risk || "unknown");
       const projectDir = escapeHtml(item.project_dir || item.path || "not set");
       const envCount = (item.compose_env_files || []).length;
+      const sourceLabel =
+        item.catalog_source === "discovered"
+          ? `Discovered from agent${item.agent_status ? ` · ${item.agent_status}` : ""}`
+          : "From site overlay";
       return `
         <tr>
           <td>
             <strong>${stackName}</strong>
             <span class="subline">${envCount ? `${envCount} env file(s)` : "No extra env files"}</span>
+            <span class="subline">${escapeHtml(sourceLabel)}</span>
           </td>
           <td>${host}</td>
           <td>${updateMode}</td>
@@ -379,9 +840,10 @@ function renderHosts() {
       const group = escapeHtml(item.group || "all");
       const address = escapeHtml(item.ansible_host || "n/a");
       const agent = item.agent;
+      const runtime = item.runtime || {};
       const agentCell = agent
         ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span>`
-        : `<span class="subline">No agent enrolled</span>`;
+        : `${statusBadge(runtime.status || "Worker-routed")}<span class="subline">${escapeHtml(runtime.detail || "Agent optional. Worker and inventory jobs still available.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
       const actionButtons = isProxmoxNode
         ? `
@@ -414,7 +876,7 @@ function renderAgents() {
   const items = state.data.agents.items;
   renderTable(
     "agents-table",
-    ["Agent", "Transport", "Platform", "Capabilities", "Last Seen"],
+    ["Agent", "Transport", "Platform", "Version", "Capabilities", "Last Seen"],
     items.map(
       (item) => `
         <tr>
@@ -427,6 +889,11 @@ function renderAgents() {
             <span class="subline">${escapeHtml(item.transport)}</span>
           </td>
           <td>${escapeHtml(item.platform || "unknown")}</td>
+          <td>
+            ${statusBadge(releaseLabel(item.release_state || "unknown"))}
+            <span class="subline mono">${escapeHtml(item.version || "unknown")}</span>
+            <span class="subline">${escapeHtml(item.update_mode || "unknown")}</span>
+          </td>
           <td>${escapeHtml((item.capabilities || []).join(", ") || "none")}</td>
           <td>${escapeHtml(formatTimestamp(item.last_seen_at))}</td>
         </tr>
@@ -471,6 +938,7 @@ function renderJobs() {
                   ? `<button data-job-approve="${escapeHtml(item.id)}">Approve</button>`
                   : ""
               }
+              ${canCancelJob(item) ? `<button class="danger" data-job-cancel="${escapeHtml(item.id)}">Cancel</button>` : ""}
             </div>
           </td>
         </tr>
@@ -499,6 +967,7 @@ function renderApprovals() {
             <div class="table-actions">
               <button data-job-approve="${escapeHtml(item.id)}">Approve</button>
               <button class="secondary" data-job-log="${escapeHtml(item.id)}">Logs</button>
+              ${canCancelJob(item) ? `<button class="danger" data-job-cancel="${escapeHtml(item.id)}">Cancel</button>` : ""}
             </div>
           </td>
         </tr>
@@ -562,13 +1031,16 @@ function renderBackups() {
 
 function renderSettings() {
   const settings = state.data.settings;
+  const context = state.data.context || {};
   siteChip.textContent = settings.site_name;
+  document.title = `${settings.ui.app_name} v${settings.ui.app_version}`;
 
   setInputValue("public-base-url", settings.public.base_url || "");
   setInputValue("public-repo-url", settings.public.repo_url || "");
   setInputValue("public-repo-ref", settings.public.repo_ref || "");
   setInputValue("public-install-script-url", settings.public.install_script_url_override || "");
   setInputValue("public-agent-compose-dir", settings.public.agent_compose_dir || "");
+  setInputValue("public-rackpatch-compose-dir", settings.public.rackpatch_compose_dir || "");
   setInputValue("telegram-chat-ids", settings.telegram.chat_ids_csv || "");
   if (document.activeElement !== document.getElementById("telegram-bot-token")) {
     document.getElementById("telegram-bot-token").value = "";
@@ -589,6 +1061,7 @@ function renderSettings() {
     `Maintenance: ${settings.maintenance_path}`,
     `Public repo: ${settings.public.repo_url}@${settings.public.repo_ref}`,
     `Agent compose dir: ${settings.public.agent_compose_dir}`,
+    `Rackpatch compose dir: ${settings.public.rackpatch_compose_dir}`,
   ].join("\n");
 
   document.getElementById("telegram-help").textContent = [
@@ -611,6 +1084,81 @@ function renderSettings() {
     "/schedule <name-or-id> on|off",
     '/job <kind> <target_type> <target_ref> {"executor":"auto"}',
   ].join("\n");
+
+  if (automationApi) {
+    const resources = context.api?.resources || {};
+    const examples = context.api?.examples || {};
+    const jobKinds = (context.job_kinds || []).map(
+      (item) => `- ${item.kind} (${item.target_type}, ${item.mode})`
+    );
+    automationApi.textContent = [
+      "Machine-friendly operator surface",
+      "Primary endpoint: /api/v1/context",
+      `Auth: ${context.api?.auth?.header || "Authorization: Bearer <token>"}`,
+      "Release status is included in settings.release and context.release.",
+      "",
+      "Endpoints:",
+      ...Object.entries(resources).map(([name, value]) => `- ${name}: ${value}`),
+      "",
+      "Examples:",
+      `- login: ${examples.login || "n/a"}`,
+      `- context: ${examples.context || "n/a"}`,
+      `- jobs: ${examples.jobs || "n/a"}`,
+      "",
+      "Job kinds:",
+      ...(jobKinds.length ? jobKinds : ["- none reported"]),
+    ].join("\n");
+  }
+
+  if (automationLive) {
+    const running = context.jobs?.running || [];
+    const approvals = context.jobs?.pending_approvals || [];
+    automationLive.textContent = [
+      `Running jobs: ${running.length}`,
+      ...(running.length
+        ? running.map((item) => `- [${shortId(item.id)}] ${item.kind} ${item.target_ref} (${item.executor})`)
+        : ["- none"]),
+      "",
+      `Pending approvals: ${approvals.length}`,
+      ...(approvals.length
+        ? approvals.map((item) => `- [${shortId(item.id)}] ${item.kind} ${item.target_ref}`)
+        : ["- none"]),
+    ].join("\n");
+  }
+  if (releaseStatus) {
+    const latest = settings.release.latest || {};
+    const stack = settings.release.stack || {};
+    const agentSummary = (settings.release.agents || {}).summary || {};
+    releaseStatus.textContent = [
+      `Current stack: v${stack.current_version || "unknown"}`,
+      `Latest upstream: ${latest.version || "unavailable"}`,
+      `Stack state: ${releaseLabel(stack.release_state || "unknown")}`,
+      `Checked at: ${latest.checked_at || latest.published_at || "n/a"}`,
+      latest.url ? `Release URL: ${latest.url}` : "Release URL: n/a",
+      latest.error ? `Error: ${latest.error}` : "",
+      "",
+      `Agents total/current/outdated/unknown: ${agentSummary.total || 0}/${agentSummary.current || 0}/${agentSummary.outdated || 0}/${agentSummary.unknown || 0}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (releaseUpdateCommands) {
+    const updateCommands = settings.release.update_commands || {};
+    const agentUpdates = updateCommands.agents || {};
+    releaseUpdateCommands.textContent = [
+      "Update rackpatch stack:",
+      updateCommands.stack || "unavailable",
+      "",
+      "Update compose-mode agents:",
+      agentUpdates.compose || "unavailable",
+      "",
+      "Update container-mode agents:",
+      agentUpdates.container || "unavailable",
+      "",
+      "Update systemd agents:",
+      agentUpdates.systemd || "unavailable",
+    ].join("\n");
+  }
   renderInstallPreviews();
 }
 
@@ -619,6 +1167,12 @@ function renderAll() {
   renderStacks();
   renderHosts();
   renderAgents();
+  populateJobKindSelect();
+  syncJobForm(jobKindSelect.value, {
+    resetOptions: state.jobFormKind !== jobKindSelect.value,
+    preserveSelection: state.jobFormKind === jobKindSelect.value,
+  });
+  syncJobLogPanel();
   renderJobs();
   renderApprovals();
   renderSchedules();
@@ -627,7 +1181,7 @@ function renderAll() {
 }
 
 async function loadDashboard() {
-  const [overview, agents, hosts, stacks, jobs, schedules, backups, settings] = await Promise.all([
+  const [overview, agents, hosts, stacks, jobs, schedules, backups, settings, jobKinds, context] = await Promise.all([
     api("/api/v1/overview"),
     api("/api/v1/agents"),
     api("/api/v1/hosts"),
@@ -636,8 +1190,10 @@ async function loadDashboard() {
     api("/api/v1/schedules"),
     api("/api/v1/backups"),
     api("/api/v1/settings"),
+    api("/api/v1/job-kinds"),
+    api("/api/v1/context"),
   ]);
-  state.data = { overview, agents, hosts, stacks, jobs, schedules, backups, settings };
+  state.data = { overview, agents, hosts, stacks, jobs, schedules, backups, settings, jobKinds, context };
   renderAll();
 }
 
@@ -650,7 +1206,9 @@ async function refreshDashboard() {
 
 async function selectJob(jobId, silent = false) {
   state.selectedJob = jobId;
-  const events = await api(`/api/v1/jobs/${jobId}/events`);
+  const [job, events] = await Promise.all([api(`/api/v1/jobs/${jobId}`), api(`/api/v1/jobs/${jobId}/events`)]);
+  const resultMarkup = buildJobResultMarkup(job);
+  jobResult.innerHTML = resultMarkup;
   jobEvents.textContent = events.items.map((item) => `[${item.ts}] ${item.message}`).join("\n") || "No events yet.";
   if (!silent && state.currentPage !== "jobs") {
     setPage("jobs");
@@ -660,6 +1218,12 @@ async function selectJob(jobId, silent = false) {
 async function approveJob(jobId) {
   await api(`/api/v1/jobs/${jobId}/approve`, { method: "POST" });
   showFlash(`Approved job ${shortId(jobId)}.`);
+  await refreshDashboard();
+}
+
+async function cancelJob(jobId) {
+  await api(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
+  showFlash(`Cancelled job ${shortId(jobId)}.`);
   await refreshDashboard();
 }
 
@@ -683,7 +1247,7 @@ async function queuePreset(kind, targetType, targetRef, payload) {
 }
 
 async function savePublicSettings() {
-  const result = await api("/api/v1/settings/public", {
+  await api("/api/v1/settings/public", {
     method: "POST",
     body: JSON.stringify({
       base_url: document.getElementById("public-base-url").value,
@@ -691,10 +1255,10 @@ async function savePublicSettings() {
       repo_ref: document.getElementById("public-repo-ref").value,
       install_script_url: document.getElementById("public-install-script-url").value,
       agent_compose_dir: document.getElementById("public-agent-compose-dir").value,
+      rackpatch_compose_dir: document.getElementById("public-rackpatch-compose-dir").value,
     }),
   });
-  state.data.settings = result;
-  renderSettings();
+  await refreshDashboard();
   document.getElementById("public-settings-result").textContent = "Saved public repo settings.";
   showFlash("Saved public repo settings.");
 }
@@ -710,12 +1274,11 @@ async function saveTelegramSettings() {
   } else if (tokenInput.trim()) {
     payload.bot_token = tokenInput.trim();
   }
-  const result = await api("/api/v1/settings/telegram", {
+  await api("/api/v1/settings/telegram", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  state.data.settings = result;
-  renderSettings();
+  await refreshDashboard();
   document.getElementById("telegram-settings-result").textContent = "Saved Telegram settings.";
   showFlash("Saved Telegram settings.");
 }
@@ -726,13 +1289,12 @@ async function createAgentToken() {
     method: "POST",
     body: JSON.stringify({ label }),
   });
-  const settings = state.data.settings;
-  const blocks = buildInstallBlocks(settings, result.token);
+  const blocks = result.agent_install || {};
   document.getElementById("agent-token-result").textContent = [
     `Label: ${result.label}`,
     `Token: ${result.token}`,
     "",
-    `Docker Compose example:`,
+    `Docker Compose command:`,
     blocks.compose,
     "",
     `Docker deploy command:`,
@@ -786,18 +1348,100 @@ document.getElementById("logout").addEventListener("click", () => {
   logoutUser();
 });
 
+jobLogExpandButton.addEventListener("click", () => {
+  state.jobLogExpanded = !state.jobLogExpanded;
+  syncJobLogPanel();
+});
+
+jobStackToggle.addEventListener("click", () => {
+  if (jobStackToggle.disabled) {
+    return;
+  }
+  setJobStackMenu();
+});
+
+jobStackMenu.addEventListener("click", (event) => {
+  const bulkAction = event.target.closest("[data-job-stack-bulk]");
+  if (!bulkAction) {
+    return;
+  }
+  const checked = bulkAction.dataset.jobStackBulk === "all";
+  jobStackOptions.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.checked = checked;
+  });
+  updateJobStackSelectionState(jobKindSelect.value);
+});
+
+jobStackOptions.addEventListener("change", () => {
+  updateJobStackSelectionState(jobKindSelect.value);
+});
+
+jobKindSelect.addEventListener("change", () => {
+  if (state.jobFormKind) {
+    storeRenderedJobOptionValues(state.jobFormKind);
+  }
+  syncJobForm(jobKindSelect.value, { preserveSelection: false });
+});
+
+jobHostToggle.addEventListener("click", () => {
+  if (jobHostToggle.disabled) {
+    return;
+  }
+  setJobHostMenu();
+});
+
+jobHostMenu.addEventListener("click", (event) => {
+  const bulkAction = event.target.closest("[data-job-host-bulk]");
+  if (!bulkAction) {
+    return;
+  }
+  const checked = bulkAction.dataset.jobHostBulk === "all";
+  jobHostOptions.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.checked = checked;
+  });
+  updateJobHostSelectionState(jobKindSelect.value);
+});
+
+jobHostOptions.addEventListener("change", () => {
+  updateJobHostSelectionState(jobKindSelect.value);
+});
+
+jobOptions.addEventListener("change", () => {
+  storeRenderedJobOptionValues(jobKindSelect.value);
+});
+
+jobOptions.addEventListener("input", () => {
+  storeRenderedJobOptionValues(jobKindSelect.value);
+});
+
+document.addEventListener("click", (event) => {
+  if (!jobStackPicker.contains(event.target)) {
+    setJobStackMenu(false);
+  }
+  if (!jobHostPicker.contains(event.target)) {
+    setJobHostMenu(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.jobLogExpanded) {
+    state.jobLogExpanded = false;
+    syncJobLogPanel();
+  }
+});
+
 document.getElementById("job-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   jobResult.textContent = "";
   try {
-    const payload = JSON.parse(document.getElementById("job-payload").value);
+    const request = buildJobRequest();
     const result = await api("/api/v1/jobs", {
       method: "POST",
       body: JSON.stringify({
-        kind: document.getElementById("job-kind").value,
-        target_type: document.getElementById("target-type").value,
-        target_ref: document.getElementById("target-ref").value,
-        payload,
+        kind: request.kind,
+        target_type: request.targetType,
+        target_ref: request.targetRef,
+        payload: request.payload,
       }),
     });
     jobResult.textContent = `Queued job ${result.id}`;
@@ -913,6 +1557,12 @@ appScreen.addEventListener("click", async (event) => {
     return;
   }
 
+  const cancelButton = event.target.closest("[data-job-cancel]");
+  if (cancelButton) {
+    await cancelJob(cancelButton.dataset.jobCancel);
+    return;
+  }
+
   const scheduleButton = event.target.closest("[data-schedule-id]");
   if (scheduleButton) {
     await toggleSchedule(scheduleButton.dataset.scheduleId, scheduleButton.dataset.scheduleEnabled === "true");
@@ -935,7 +1585,11 @@ setInterval(async () => {
   if (!state.token) {
     return;
   }
-  if (document.activeElement && document.activeElement.closest('[data-page="settings"] form')) {
+  if (
+    document.activeElement &&
+    (document.activeElement.closest('[data-page="settings"] form') ||
+      document.activeElement.closest("#job-form"))
+  ) {
     return;
   }
   try {
