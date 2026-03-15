@@ -83,6 +83,10 @@ normalize_socket_path() {
   fi
 }
 
+socket_dir_path() {
+  dirname "${socket_path}"
+}
+
 if [[ -z "${install_source}" ]]; then
   if [[ -n "${BASH_SOURCE[0]-}" ]]; then
     install_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -159,6 +163,15 @@ EOF
 }
 
 write_helper_service() {
+  local socket_dir runtime_dir_block=""
+  socket_dir="$(socket_dir_path)"
+  if [[ "${socket_dir}" == /run/* && "${socket_dir}" != "/run" ]]; then
+    runtime_dir_block=$(cat <<EOF
+RuntimeDirectory=${socket_dir#/run/}
+RuntimeDirectoryMode=0755
+EOF
+)
+  fi
   cat > /etc/systemd/system/rackpatch-host-helper.service <<EOF
 [Unit]
 Description=rackpatch host maintenance helper
@@ -169,6 +182,7 @@ Wants=network-online.target
 EnvironmentFile=/etc/default/rackpatch-host-helper
 User=${helper_user}
 Group=${helper_user}
+${runtime_dir_block}
 ExecStart=/usr/bin/python3 ${helper_dir}/helper_server.py
 Restart=always
 RestartSec=5
@@ -176,6 +190,15 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+prepare_socket_directory() {
+  local socket_dir
+  socket_dir="$(socket_dir_path)"
+  if [[ "${socket_dir}" == "/run" ]]; then
+    return
+  fi
+  install -d -m 0755 -o "${helper_user}" -g "${helper_user}" "${socket_dir}"
 }
 
 restart_helper_service() {
@@ -228,6 +251,7 @@ install_helper_files
 write_helper_env
 write_sudoers
 write_helper_service
+prepare_socket_directory
 restart_helper_service
 
 case "${mode}" in

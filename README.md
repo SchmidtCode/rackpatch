@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
 
-Version in this repo: `v0.3.1`
+Version in this repo: `v0.3.2`
 
 ## What rackpatch does
 
@@ -12,7 +12,7 @@ Version in this repo: `v0.3.1`
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
-## v0.3.1 highlights
+## v0.3.2 highlights
 
 - Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
 - Mobile-friendly navigation, tables, and install/update previews.
@@ -20,6 +20,9 @@ Version in this repo: `v0.3.1`
 - Machine-readable `/api/v1/context` and `/api/v1/job-kinds` endpoints for AI operators and scripted setup.
 - GitHub-backed latest-version checks for the control plane and agents.
 - Safer public-repo prep with `make release-check` plus stricter ignore rules for secrets and private overlays.
+- Helper enable commands now use `sudo` in generated install previews and docs.
+- Compose and container helper installs now manage a stable runtime socket directory so host-maintenance helper access survives normal restarts and cleanly recreates on boot.
+- Agent heartbeats refresh helper-backed capabilities so the Hosts and Jobs UI stops lagging behind real helper access.
 
 ## Runtime services
 
@@ -157,16 +160,16 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.1/scripts/update-rackpatch.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.2/scripts/update-rackpatch.sh | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.1
+  --ref v0.3.2
 ```
 
 Example host-maintenance enablement:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode compose \
   --compose-dir /srv/compose/rackpatch-agent \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
@@ -174,6 +177,8 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/
 ```
 
 The helper exposes only approved host-maintenance actions and is intended for package check and package patch in this rollout.
+
+`Patch Live` remains grey for helper-backed hosts that still require snapshot-before-patch. In the current rollout, helper-backed live patching only becomes eligible when the host advertises helper access and its inventory policy allows live patching without a pre-patch snapshot, which means `snapshot_class: none` for that host.
 
 ## Trust-sensitive privileged actions
 
@@ -244,7 +249,7 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 - Run `make release-check` before pushing a public branch. It fails if tracked files include `.env`, key material, `secrets/`, or non-example site overlays.
 - Rotate any tokens or passwords from your current local `.env` before the first public push.
 
-## Release flow for v0.3.1
+## Release flow for v0.3.2
 
 If `origin` is already configured, confirm it first:
 
@@ -256,18 +261,18 @@ Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.3.1
-git push -u origin release/v0.3.1
+git switch -c release/v0.3.2
+git push -u origin release/v0.3.2
 ```
 
-Open a pull request from `release/v0.3.1` into `main`. After the PR merges:
+Open a pull request from `release/v0.3.2` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.1 -m "v0.3.1"
-git push origin v0.3.1
+git tag -a v0.3.2 -m "v0.3.2"
+git push origin v0.3.2
 ```
 
 Suggested GitHub release notes:

@@ -76,6 +76,7 @@ def build_agent_host_maintenance_command(
         "-fsSL",
         script_url,
         "|",
+        "sudo",
         "bash",
         "-s",
         "--",
