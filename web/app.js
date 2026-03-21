@@ -6,6 +6,9 @@ const state = {
   jobFormKind: null,
   jobOptionValues: {},
   jobLogExpanded: false,
+  stackSelection: [],
+  expandedStacks: {},
+  stackUpdateRequiresApproval: true,
   data: null,
   flashTimer: null,
 };
@@ -50,11 +53,17 @@ const jobManualTargetWrap = document.getElementById("job-manual-target-wrap");
 const jobManualTargetLabel = document.getElementById("job-manual-target-label");
 const jobManualTargetInput = document.getElementById("job-manual-target");
 const jobOptions = document.getElementById("job-options");
+const stacksSummary = document.getElementById("stacks-summary");
 const overviewRelease = document.getElementById("overview-release");
 const automationApi = document.getElementById("automation-api");
 const automationLive = document.getElementById("automation-live");
 const releaseStatus = document.getElementById("release-status");
 const releaseUpdateCommands = document.getElementById("release-update-commands");
+const fleetUpdateSummary = document.getElementById("fleet-update-summary");
+const fleetUpdateCommands = document.getElementById("fleet-update-commands");
+const fleetUpdateQueueButton = document.getElementById("fleet-update-queue");
+const fleetUpdateCopyButton = document.getElementById("fleet-update-copy");
+const appVersionNodes = document.querySelectorAll("[data-app-version]");
 
 const FALLBACK_JOB_KIND = {
   kind: "docker_update",
@@ -66,6 +75,17 @@ const FALLBACK_JOB_KIND = {
   default_select_all: true,
   fields: [],
 };
+
+function applyAppVersion(version = {}) {
+  const appName = String(version.app_name || "rackpatch").trim() || "rackpatch";
+  const appVersion = `v${String(version.app_version || "unknown").trim() || "unknown"}`;
+  const displayName = String(version.app_display_name || `${appName} ${appVersion}`).trim() || appName;
+
+  appVersionNodes.forEach((node) => {
+    node.textContent = appVersion;
+  });
+  document.title = displayName;
+}
 
 function getJobKindItems() {
   return state.data?.jobKinds?.items || state.data?.context?.job_kinds || [];
@@ -110,6 +130,17 @@ async function api(path, options = {}) {
     throw new Error(parseApiError(text, response.status));
   }
   return response.json();
+}
+
+async function loadAppVersion() {
+  try {
+    const version = await api("/api/v1/version");
+    applyAppVersion(version);
+    return version;
+  } catch (_) {
+    applyAppVersion();
+    return null;
+  }
 }
 
 function parseApiError(text, status) {
@@ -176,10 +207,10 @@ function badge(value, flavor = "") {
 
 function statusBadge(status) {
   const lower = String(status || "").toLowerCase();
-  if (["completed", "online", "enabled", "approved", "current"].includes(lower)) {
+  if (["completed", "online", "enabled", "approved", "current", "up-to-date", "up to date"].includes(lower)) {
     return badge(status, "good");
   }
-  if (["failed", "offline", "pending_approval", "pending", "outdated"].includes(lower)) {
+  if (["failed", "offline", "pending_approval", "pending approval", "pending", "outdated", "warning"].includes(lower)) {
     return badge(status, "warn");
   }
   return badge(status, "accent");
@@ -200,6 +231,99 @@ function releaseLabel(value) {
     return "Different";
   }
   return value || "Unknown";
+}
+
+function pluralize(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getDockerUpdateItems() {
+  return state.data?.dockerUpdates?.items || [];
+}
+
+function selectedStackNames() {
+  const available = new Set(getDockerUpdateItems().map((item) => item.name));
+  state.stackSelection = state.stackSelection.filter((name) => available.has(name));
+  return [...state.stackSelection];
+}
+
+function isStackSelected(name) {
+  return selectedStackNames().includes(name);
+}
+
+function setSelectedStacks(names) {
+  const allowed = new Set(
+    getDockerUpdateItems()
+      .filter((item) => item.selection_eligible)
+      .map((item) => item.name)
+  );
+  state.stackSelection = [...new Set((names || []).filter((name) => allowed.has(name)))];
+}
+
+function toggleStackSelection(name, checked) {
+  const next = new Set(selectedStackNames());
+  if (checked) {
+    next.add(name);
+  } else {
+    next.delete(name);
+  }
+  setSelectedStacks([...next]);
+  renderStacks();
+}
+
+function toggleStackDetails(name) {
+  state.expandedStacks[name] = !state.expandedStacks[name];
+  renderStacks();
+}
+
+function inspectionStateLabel(stateValue) {
+  const value = String(stateValue || "unknown");
+  if (value === "up-to-date") {
+    return "Up to date";
+  }
+  if (value === "never_checked") {
+    return "Not checked";
+  }
+  if (value === "pending_approval") {
+    return "Pending approval";
+  }
+  if (value === "no-images") {
+    return "No images";
+  }
+  return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function renderInspectionServices(report) {
+  const services = Array.isArray(report?.services) ? report.services : [];
+  if (!services.length) {
+    return `<div class="empty">No per-service details yet.</div>`;
+  }
+  return `
+    <div class="stack-detail-list">
+      ${services
+        .map((service) => {
+          const ref = escapeHtml(service.ref || "n/a");
+          const local = escapeHtml(service.local_short || "unknown");
+          const remote = escapeHtml(service.remote_short || "unknown");
+          const error = service.error ? `<span class="subline">${escapeHtml(service.error)}</span>` : "";
+          return `
+            <div class="stack-detail-row">
+              <div>
+                <strong>${escapeHtml(service.service || "unknown")}</strong>
+                <span class="subline mono">${ref}</span>
+                ${error}
+              </div>
+              <div>${statusBadge(inspectionStateLabel(service.status || "unknown"))}</div>
+              <div>
+                <span class="subline">Local ${local}</span>
+                <span class="subline">Registry ${remote}</span>
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 function emptyState(message = "Nothing here yet.") {
@@ -397,6 +521,13 @@ function buildJobResultMarkup(job) {
   const result = job?.result;
   if (!result || typeof result !== "object") {
     return "";
+  }
+
+  if (job.kind === "docker_check" && result.report) {
+    const report = result.report;
+    const header = `${report.name || job.target_ref}: ${inspectionStateLabel(report.status || "unknown")}`;
+    const detail = `${report.outdated_count || 0}/${report.image_count || 0} tracked image(s) outdated.`;
+    return [header, detail].map((line) => escapeHtml(line)).join("<br>");
   }
 
   if (job.kind === "docker_update" && result.update_summary && Array.isArray(result.update_summary.stacks)) {
@@ -945,45 +1076,184 @@ function renderOverview() {
 }
 
 function renderStacks() {
-  const items = state.data.stacks.items;
-  renderTable(
-    "stacks-table",
-    ["Stack", "Host", "Mode", "Risk", "Project Dir", "Actions"],
-    items.map((item) => {
-      const stackName = escapeHtml(item.name);
-      const resolvedHost = item.host === "localhost" && item.guest_host ? item.guest_host : item.host;
-      const host = escapeHtml(resolvedHost || "unknown");
-      const updateMode = badge(item.update_mode || "manual", "accent");
-      const risk = badge(item.risk || "unknown");
-      const projectDir = escapeHtml(item.project_dir || item.path || "not set");
-      const envCount = (item.compose_env_files || []).length;
-      const sourceLabel =
-        item.catalog_source === "discovered"
-          ? `Discovered from agent${item.agent_status ? ` · ${item.agent_status}` : ""}`
-          : "From site overlay";
-      return `
+  const payload = state.data?.dockerUpdates || { summary: {}, items: [] };
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const summary = payload.summary || {};
+  const selected = selectedStackNames();
+
+  if (stacksSummary) {
+    const selectable = Number(summary.selectable_stacks || 0);
+    const canUpdateSelected = selected.length > 0;
+    stacksSummary.innerHTML = `
+      <div class="stack-toolbar">
+        <div class="stack-summary-grid">
+          <div class="stack-summary-card">
+            <span class="stat-label">Coverage</span>
+            <strong>${pluralize(Number(summary.checked_stacks || 0), "stack")} checked of ${summary.total_stacks || 0}</strong>
+            <span class="subline">${pluralize(Number(summary.running_checks || 0), "check")} still running</span>
+          </div>
+          <div class="stack-summary-card">
+            <span class="stat-label">Updates</span>
+            <strong>${pluralize(Number(summary.outdated_stacks || 0), "stack")} with updates</strong>
+            <span class="subline">${pluralize(Number(summary.outdated_images || 0), "image")} outdated across the fleet</span>
+          </div>
+          <div class="stack-summary-card">
+            <span class="stat-label">Selection</span>
+            <strong>${pluralize(selected.length, "stack")} selected</strong>
+            <span class="subline">${selectable} stack(s) are ready for bulk live updates</span>
+          </div>
+        </div>
+        <div class="stack-selection-controls">
+          <div class="table-actions">
+            <button type="button" data-stack-bulk-check="all">Check All</button>
+            <button type="button" class="secondary" data-stack-select-mode="outdated">Select Outdated</button>
+            <button type="button" class="secondary" data-stack-select-mode="none">Clear</button>
+            <button type="button" data-stack-update-selected${buttonStateAttrs(!canUpdateSelected, "Select at least one eligible outdated stack first.")}>Update Selected</button>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" data-stack-update-approval ${state.stackUpdateRequiresApproval ? "checked" : ""} />
+            Require approval before live updates
+          </label>
+        </div>
+      </div>
+    `;
+  }
+
+  const root = document.getElementById("stacks-table");
+  if (!items.length) {
+    root.innerHTML = emptyState("No stacks configured.");
+    return;
+  }
+
+  root.innerHTML = `
+    <table class="data-table stack-update-table">
+      <thead>
         <tr>
-          <td>
-            <strong>${stackName}</strong>
-            <span class="subline">${envCount ? `${envCount} env file(s)` : "No extra env files"}</span>
-            <span class="subline">${escapeHtml(sourceLabel)}</span>
-          </td>
-          <td>${host}</td>
-          <td>${updateMode}</td>
-          <td>${risk}</td>
-          <td><span class="path-pill mono" title="${projectDir}">${projectDir}</span></td>
-          <td>
-            <div class="table-actions">
-              <button class="secondary" data-stack-action="dry-run" data-stack-name="${stackName}">Dry Run</button>
-              <button data-stack-action="update" data-stack-name="${stackName}">Live</button>
-              <button class="secondary" data-stack-action="rollback" data-stack-name="${stackName}">Rollback</button>
-            </div>
-          </td>
+          <th>Select</th>
+          <th>Stack</th>
+          <th>Host</th>
+          <th>Inspection</th>
+          <th>Latest Update</th>
+          <th>Policy</th>
+          <th>Actions</th>
         </tr>
-      `;
-    }),
-    "No stacks configured."
-  );
+      </thead>
+      <tbody>
+        ${items
+          .map((item) => {
+            const stackName = escapeHtml(item.name);
+            const inspection = item.inspection || {};
+            const report = inspection.report || {};
+            const latestUpdate = item.latest_update || {};
+            const liveAccess = item.job_access?.docker_update_live || {};
+            const checkAccess = item.job_access?.docker_check || {};
+            const dryAccess = item.job_access?.docker_update_dry_run || {};
+            const resolvedHost = item.host === "localhost" && item.guest_host ? item.guest_host : item.host;
+            const host = escapeHtml(resolvedHost || "unknown");
+            const projectDir = escapeHtml(item.project_dir || item.path || "not set");
+            const envCount = (item.compose_env_files || []).length;
+            const sourceLabel =
+              item.catalog_source === "discovered"
+                ? `Discovered from agent${item.agent_status ? ` · ${item.agent_status}` : ""}`
+                : "From site overlay";
+            const inspectionState = inspectionStateLabel(inspection.state || "unknown");
+            const updateStatus = latestUpdate.status ? String(latestUpdate.status).replaceAll("_", " ") : "never run";
+            const changedServices = Number((latestUpdate.summary || {}).changed_services || 0);
+            const policyBits = [
+              item.backup_before ? "backup_before" : "",
+              item.snapshot_before ? "snapshot_before" : "",
+            ].filter(Boolean);
+            const detailsExpanded = Boolean(state.expandedStacks[item.name]);
+            const detailReport = report && Object.keys(report).length ? renderInspectionServices(report) : emptyState("Run a check to load image-by-image details.");
+            const detailSummary = changedServices
+              ? `<span class="subline">${pluralize(changedServices, "service")} changed in the latest successful update.</span>`
+              : latestUpdate.error
+                ? `<span class="subline error">${escapeHtml(latestUpdate.error)}</span>`
+                : `<span class="subline">${escapeHtml(latestUpdate.finished_at ? `Last update finished ${formatTimestamp(latestUpdate.finished_at)}.` : "No completed live update recorded yet.")}</span>`;
+            return `
+              <tr>
+                <td>
+                  <input
+                    type="checkbox"
+                    data-stack-select="${stackName}"
+                    ${item.selection_eligible ? "" : "disabled"}
+                    ${isStackSelected(item.name) ? "checked" : ""}
+                  />
+                </td>
+                <td>
+                  <strong>${stackName}</strong>
+                  <span class="subline">${envCount ? `${envCount} env file(s)` : "No extra env files"}</span>
+                  <span class="subline">${escapeHtml(sourceLabel)}</span>
+                  <span class="subline">${badge(item.update_mode || "manual", "accent")} ${badge(item.risk || "unknown")}</span>
+                </td>
+                <td>
+                  <strong>${host}</strong>
+                  <span class="path-pill mono" title="${projectDir}">${projectDir}</span>
+                </td>
+                <td>
+                  ${statusBadge(inspectionState)}
+                  <span class="subline">
+                    ${report.outdated_count ? `${report.outdated_count}/${report.image_count || 0} outdated` : report.image_count ? `${report.image_count} tracked image(s)` : "No inspection data"}
+                  </span>
+                  <span class="subline">${escapeHtml(inspection.checked_at ? formatTimestamp(inspection.checked_at) : "Not checked yet")}</span>
+                  ${inspection.error ? `<span class="subline error">${escapeHtml(inspection.error)}</span>` : ""}
+                </td>
+                <td>
+                  ${statusBadge(updateStatus === "never run" ? "never run" : updateStatus)}
+                  <span class="subline">
+                    ${changedServices ? `${pluralize(changedServices, "service")} changed` : latestUpdate.finished_at ? `Finished ${formatTimestamp(latestUpdate.finished_at)}` : "No update run yet"}
+                  </span>
+                  ${latestUpdate.error ? `<span class="subline error">${escapeHtml(latestUpdate.error)}</span>` : ""}
+                </td>
+                <td>
+                  ${policyBits.length ? policyBits.map((value) => badge(value, "warn")).join(" ") : badge("agent-ready", "good")}
+                  <span class="subline">${escapeHtml(liveAccess.eligible ? "Live updates available through the stack agent." : liveAccess.reason || checkAccess.reason || "Inspection unavailable.")}</span>
+                  ${!dryAccess.eligible && dryAccess.reason ? `<span class="subline">${escapeHtml(dryAccess.reason)}</span>` : ""}
+                </td>
+                <td>
+                  <div class="table-actions">
+                    <button class="secondary" data-stack-action="check" data-stack-name="${stackName}"${buttonStateAttrs(
+                      !checkAccess.eligible,
+                      checkAccess.reason || ""
+                    )}>Check</button>
+                    <button data-stack-action="update" data-stack-name="${stackName}"${buttonStateAttrs(
+                      !liveAccess.eligible,
+                      liveAccess.reason || ""
+                    )}>Live</button>
+                    <button class="secondary" data-stack-action="rollback" data-stack-name="${stackName}">Rollback</button>
+                    <button class="secondary" data-stack-action="details" data-stack-name="${stackName}">${detailsExpanded ? "Hide" : "Details"}</button>
+                  </div>
+                </td>
+              </tr>
+              ${
+                detailsExpanded
+                  ? `
+                    <tr class="stack-detail-shell">
+                      <td colspan="7">
+                        <div class="stack-detail-grid">
+                          <div class="stack-detail-card">
+                            <strong>Inspection Details</strong>
+                            <span class="subline">${escapeHtml(inspection.checked_at ? `Checked ${formatTimestamp(inspection.checked_at)}` : "No completed inspection yet.")}</span>
+                            ${detailReport}
+                          </div>
+                          <div class="stack-detail-card">
+                            <strong>Update Readiness</strong>
+                            <span class="subline">${escapeHtml(liveAccess.eligible ? "Bulk and single-stack live updates are available." : liveAccess.reason || "Live updates are blocked for this stack.")}</span>
+                            <span class="subline">${escapeHtml(checkAccess.eligible ? "Inspection checks can run on this stack." : checkAccess.reason || "Inspection checks are blocked.")}</span>
+                            ${detailSummary}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  `
+                  : ""
+              }
+            `;
+          })
+          .join("")}
+      </tbody>
+    </table>
+  `;
 }
 
 function renderHosts() {
@@ -1257,7 +1527,7 @@ function renderSettings() {
   const settings = state.data.settings;
   const context = state.data.context || {};
   siteChip.textContent = settings.site_name;
-  document.title = `${settings.ui.app_name} v${settings.ui.app_version}`;
+  document.title = settings.ui.app_display_name || `${settings.ui.app_name} v${settings.ui.app_version}`;
 
   setInputValue("public-base-url", settings.public.base_url || "");
   setInputValue("public-repo-url", settings.public.repo_url || "");
@@ -1382,6 +1652,54 @@ function renderSettings() {
       agentUpdates.systemd || "unavailable",
     ].join("\n");
   }
+  if (fleetUpdateSummary || fleetUpdateCommands) {
+    const fleet = settings.release.update_commands?.fleet_agents || {};
+    const skippedNames = new Set(
+      (Array.isArray(fleet.skipped) ? fleet.skipped : []).flatMap((item) =>
+        [item.name, item.agent_name].map((value) => String(value || "")).filter(Boolean)
+      )
+    );
+    const queueableAgents = (state.data?.agents?.items || []).filter((item) => {
+      const identity = [item.display_name, item.name].map((value) => String(value || "")).filter(Boolean);
+      if (identity.some((value) => skippedNames.has(value))) {
+        return false;
+      }
+      const capabilities = Array.isArray(item.capabilities) ? item.capabilities.map((value) => String(value)) : [];
+      if (!capabilities.includes("agent-self-update")) {
+        return false;
+      }
+      const agentStatus = String(item.status || "").toLowerCase();
+      const releaseState = String(item.release_state || "").toLowerCase();
+      if (agentStatus !== "online") {
+        return false;
+      }
+      return !["current", "ahead"].includes(releaseState);
+    });
+    if (fleetUpdateSummary) {
+      const skipped = Array.isArray(fleet.skipped) ? fleet.skipped : [];
+      fleetUpdateSummary.textContent = [
+        fleet.summary || "Unavailable",
+        `Included commands: ${fleet.included ?? 0}`,
+        `Queueable agents: ${queueableAgents.length}`,
+        `Skipped agents: ${skipped.length}`,
+        ...(skipped.length
+          ? [
+              "",
+              ...skipped.map((item) => {
+                const reason = item.reason ? `: ${item.reason}` : "";
+                return `- ${item.name || "unknown"} (${item.mode || "unknown"})${reason}`;
+              }),
+            ]
+          : []),
+      ].join("\n");
+    }
+    if (fleetUpdateCommands) {
+      fleetUpdateCommands.textContent = fleet.command || "unavailable";
+    }
+    if (fleetUpdateQueueButton) {
+      fleetUpdateQueueButton.disabled = queueableAgents.length < 1;
+    }
+  }
   renderInstallPreviews();
 }
 
@@ -1404,11 +1722,12 @@ function renderAll() {
 }
 
 async function loadDashboard() {
-  const [overview, agents, hosts, stacks, jobs, schedules, backups, settings, jobKinds, context] = await Promise.all([
+  const [overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context] = await Promise.all([
     api("/api/v1/overview"),
     api("/api/v1/agents"),
     api("/api/v1/hosts"),
     api("/api/v1/stacks"),
+    api("/api/v1/docker/updates"),
     api("/api/v1/jobs"),
     api("/api/v1/schedules"),
     api("/api/v1/backups"),
@@ -1416,7 +1735,8 @@ async function loadDashboard() {
     api("/api/v1/job-kinds"),
     api("/api/v1/context"),
   ]);
-  state.data = { overview, agents, hosts, stacks, jobs, schedules, backups, settings, jobKinds, context };
+  state.data = { overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context };
+  setSelectedStacks(state.stackSelection);
   renderAll();
 }
 
@@ -1479,6 +1799,7 @@ async function deleteBackup(backupId, deleteSupported) {
 
 function formatQueueResult(result, fallbackKind, fallbackTarget) {
   const kind = result?.kind || fallbackKind;
+  const kindLabel = String(getJobKindConfig(kind).label || kind || "job");
   const targetRef = result?.target_ref || fallbackTarget;
   const queuedJobs = Array.isArray(result?.jobs) ? result.jobs : [];
   const jobIds = Array.isArray(result?.job_ids) ? result.job_ids : [];
@@ -1487,12 +1808,12 @@ function formatQueueResult(result, fallbackKind, fallbackTarget) {
     const jobId = result?.id ? shortId(result.id) : "unknown";
     return {
       detail: `Queued job ${jobId}`,
-      flash: `Queued ${kind} for ${targetRef}.`,
+      flash: `Queued ${kindLabel} for ${targetRef}.`,
     };
   }
 
   const queuedCount = Number(result?.queued_count || queuedJobs.length || jobIds.length || 0);
-  const lines = [`Queued ${queuedCount} ${kind} job${queuedCount === 1 ? "" : "s"} for ${targetRef}.`];
+  const lines = [`Queued ${queuedCount} ${kindLabel} job${queuedCount === 1 ? "" : "s"} for ${targetRef}.`];
   if (jobIds.length) {
     lines.push(`Jobs: ${jobIds.map((value) => shortId(value)).join(", ")}`);
   }
@@ -1506,7 +1827,7 @@ function formatQueueResult(result, fallbackKind, fallbackTarget) {
   }
   return {
     detail: lines.join("\n"),
-    flash: `Queued ${queuedCount} ${kind} job${queuedCount === 1 ? "" : "s"}${skipped.length ? `; skipped ${skipped.length}` : ""}.`,
+    flash: `Queued ${queuedCount} ${kindLabel} job${queuedCount === 1 ? "" : "s"}${skipped.length ? `; skipped ${skipped.length}` : ""}.`,
   };
 }
 
@@ -1585,6 +1906,8 @@ function logoutUser() {
   localStorage.removeItem("ops_token");
   state.token = "";
   state.selectedJob = null;
+  state.stackSelection = [];
+  state.expandedStacks = {};
   state.data = null;
   appScreen.classList.add("hidden");
   loginScreen.classList.remove("hidden");
@@ -1734,6 +2057,48 @@ document.getElementById("job-form").addEventListener("submit", async (event) => 
   }
 });
 
+if (fleetUpdateQueueButton) {
+  fleetUpdateQueueButton.addEventListener("click", async () => {
+    try {
+      const result = await queuePreset("agent_update", "agent", "all", {
+        executor: "agent",
+        requires_approval: false,
+      });
+      if (fleetUpdateSummary && result?.fanout) {
+        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        fleetUpdateSummary.textContent = [
+          `Queued ${result.queued_count || 0} agent update job${Number(result.queued_count || 0) === 1 ? "" : "s"}.`,
+          `Skipped agents: ${skipped.length}`,
+          ...(skipped.length
+            ? [
+                "",
+                ...skipped.map((item) => `- ${item.target_ref || "unknown"}: ${item.reason || "not eligible"}`),
+              ]
+            : []),
+        ].join("\n");
+      }
+    } catch (error) {
+      showFlash(error.message, "error");
+    }
+  });
+}
+
+if (fleetUpdateCopyButton) {
+  fleetUpdateCopyButton.addEventListener("click", async () => {
+    const command = fleetUpdateCommands?.textContent || "";
+    if (!command.trim() || command === "unavailable") {
+      showFlash("No fleet update bundle is available yet.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(command);
+      showFlash("Copied the fleet update bundle.");
+    } catch (error) {
+      showFlash(`Copy failed: ${error.message}`);
+    }
+  });
+}
+
 document.getElementById("public-settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   await savePublicSettings();
@@ -1747,6 +2112,18 @@ document.getElementById("telegram-settings-form").addEventListener("submit", asy
 document.getElementById("agent-token-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   await createAgentToken();
+});
+
+appScreen.addEventListener("change", (event) => {
+  const stackSelect = event.target.closest("[data-stack-select]");
+  if (stackSelect) {
+    toggleStackSelection(stackSelect.dataset.stackSelect, Boolean(stackSelect.checked));
+    return;
+  }
+
+  if (event.target.matches("[data-stack-update-approval]")) {
+    state.stackUpdateRequiresApproval = Boolean(event.target.checked);
+  }
 });
 
 appScreen.addEventListener("click", async (event) => {
@@ -1770,6 +2147,14 @@ appScreen.addEventListener("click", async (event) => {
     if (!stackName || !action) {
       return;
     }
+    if (action === "check") {
+      await queuePreset("docker_check", "stack", stackName, {
+        executor: "agent",
+        selected_stacks: [stackName],
+        requires_approval: false,
+      });
+      return;
+    }
     if (action === "dry-run") {
       await queuePreset("docker_update", "stack", stackName, {
         executor: "agent",
@@ -1784,6 +2169,7 @@ appScreen.addEventListener("click", async (event) => {
         executor: "agent",
         selected_stacks: [stackName],
         dry_run: false,
+        requires_approval: state.stackUpdateRequiresApproval,
       });
       return;
     }
@@ -1791,6 +2177,59 @@ appScreen.addEventListener("click", async (event) => {
       await queuePreset("rollback", "stack", stackName, { executor: "worker" });
       return;
     }
+    if (action === "details") {
+      toggleStackDetails(stackName);
+      return;
+    }
+  }
+
+  const stackCheckAll = event.target.closest("[data-stack-bulk-check]");
+  if (stackCheckAll) {
+    await queuePreset("docker_check", "stack", "all", {
+      executor: "agent",
+      selected_stacks: getDockerUpdateItems().map((item) => item.name),
+      requires_approval: false,
+    });
+    return;
+  }
+
+  const stackSelectMode = event.target.closest("[data-stack-select-mode]");
+  if (stackSelectMode) {
+    if (stackSelectMode.dataset.stackSelectMode === "outdated") {
+      setSelectedStacks(
+        getDockerUpdateItems()
+          .filter((item) => item.selection_eligible)
+          .map((item) => item.name)
+      );
+    } else {
+      setSelectedStacks([]);
+    }
+    renderStacks();
+    return;
+  }
+
+  const stackUpdateSelected = event.target.closest("[data-stack-update-selected]");
+  if (stackUpdateSelected) {
+    const selectedStacks = selectedStackNames();
+    if (!selectedStacks.length) {
+      showFlash("Select at least one eligible outdated stack first.", "error");
+      return;
+    }
+    const confirmMessage = state.stackUpdateRequiresApproval
+      ? `Queue ${selectedStacks.length} live stack update job(s) for approval?`
+      : `Queue ${selectedStacks.length} live stack update job(s) now?`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+    await queuePreset("docker_update", "stack", "all", {
+      executor: "agent",
+      selected_stacks: selectedStacks,
+      dry_run: false,
+      requires_approval: state.stackUpdateRequiresApproval,
+    });
+    setSelectedStacks([]);
+    renderStacks();
+    return;
   }
 
   const hostButton = event.target.closest("[data-host-kind]");
@@ -1856,34 +2295,38 @@ appScreen.addEventListener("click", async (event) => {
 
 window.addEventListener("hashchange", syncPageFromHash);
 
-if (state.token) {
-  loginScreen.classList.add("hidden");
-  appScreen.classList.remove("hidden");
+async function bootstrap() {
+  await loadAppVersion();
   syncPageFromHash();
-  refreshDashboard().catch((error) => {
-    loginError.textContent = error.message;
-    logoutUser();
-  });
+
+  if (state.token) {
+    loginScreen.classList.add("hidden");
+    appScreen.classList.remove("hidden");
+    refreshDashboard().catch((error) => {
+      loginError.textContent = error.message;
+      logoutUser();
+    });
+  }
+
+  setInterval(async () => {
+    if (!state.token) {
+      return;
+    }
+    if (
+      document.activeElement &&
+      (document.activeElement.closest('[data-page="settings"] form') ||
+        document.activeElement.closest("#job-form"))
+    ) {
+      return;
+    }
+    try {
+      await refreshDashboard();
+    } catch (error) {
+      if (String(error.message).includes("session")) {
+        logoutUser();
+      }
+    }
+  }, 8000);
 }
 
-setInterval(async () => {
-  if (!state.token) {
-    return;
-  }
-  if (
-    document.activeElement &&
-    (document.activeElement.closest('[data-page="settings"] form') ||
-      document.activeElement.closest("#job-form"))
-  ) {
-    return;
-  }
-  try {
-    await refreshDashboard();
-  } catch (error) {
-    if (String(error.message).includes("session")) {
-      logoutUser();
-    }
-  }
-}, 8000);
-
-syncPageFromHash();
+bootstrap();

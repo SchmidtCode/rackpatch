@@ -274,6 +274,12 @@ button.danger {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 
+.queue-job-panel {
+  position: relative;
+  z-index: 2;
+  overflow: visible;
+}
+
 .settings-grid {
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
 }
@@ -334,6 +340,43 @@ button.danger {
   background: rgba(7, 17, 20, 0.62);
 }
 
+.stack-toolbar {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.stack-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.stack-summary-card {
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(7, 17, 20, 0.55);
+}
+
+.stack-summary-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.02rem;
+}
+
+.stack-selection-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .data-table {
   width: 100%;
   min-width: 920px;
@@ -361,6 +404,58 @@ button.danger {
 
 .data-table td strong {
   display: block;
+}
+
+.stack-update-table td:first-child,
+.stack-update-table th:first-child {
+  width: 56px;
+}
+
+.stack-update-table input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+.stack-detail-shell td {
+  padding-top: 0;
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.stack-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  padding: 0 0 12px;
+}
+
+.stack-detail-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(7, 17, 20, 0.7);
+}
+
+.stack-detail-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.stack-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) auto auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .table-actions {
@@ -553,6 +648,11 @@ button.danger {
 .job-host-picker.open .job-host-toggle {
   border-color: var(--line-strong);
   background: rgba(255, 255, 255, 0.08);
+}
+
+.job-target-picker.open,
+.job-host-picker.open {
+  z-index: 3;
 }
 
 .job-target-menu,
@@ -815,6 +915,14 @@ button.danger {
 
   .settings-grid,
   .split-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .stack-selection-controls {
+    display: grid;
+  }
+
+  .stack-detail-row {
     grid-template-columns: 1fr;
   }
 

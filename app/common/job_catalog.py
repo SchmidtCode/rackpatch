@@ -6,6 +6,20 @@ from typing import Any
 
 JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
     {
+        "kind": "docker_check",
+        "label": "Docker update check",
+        "mode": "stack_multi",
+        "target_type": "stack",
+        "summary": "Inspect one or more stacks for available image updates through enrolled Docker-capable agents.",
+        "defaults": {
+            "executor": "agent",
+            "window": "all",
+            "requires_approval": False,
+        },
+        "default_select_all": True,
+        "fields": [],
+    },
+    {
         "kind": "docker_update",
         "label": "Docker update",
         "mode": "stack_multi",
@@ -210,6 +224,27 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
                 "type": "toggle",
                 "label": "Require approval",
                 "hint": "Keep rollback behind approval before it is released to the worker.",
+            },
+        ],
+    },
+    {
+        "kind": "agent_update",
+        "label": "Agent update",
+        "mode": "manual",
+        "target_type": "agent",
+        "manual_label": "Agent or all",
+        "manual_placeholder": "all",
+        "summary": "Queue an enrolled agent update by agent name, or enter all to fan out across eligible agents.",
+        "defaults": {
+            "executor": "agent",
+            "requires_approval": False,
+        },
+        "fields": [
+            {
+                "name": "requires_approval",
+                "type": "toggle",
+                "label": "Require approval",
+                "hint": "Hold the update jobs for approval before the agents restart themselves.",
             },
         ],
     },

@@ -171,6 +171,118 @@ def _job_summary_rows(where_sql: str = "", params: tuple[Any, ...] = (), limit: 
     )
 
 
+def _latest_stack_job_map(kind: str) -> dict[str, dict[str, Any]]:
+    rows = db.fetch_all(
+        """
+        SELECT DISTINCT ON (target_ref)
+               id, kind, status, source, target_type, target_ref, payload, result,
+               requested_by, approval_status, target_agent_id, created_at, queued_at,
+               started_at, finished_at
+        FROM jobs
+        WHERE kind = %s
+          AND target_type = 'stack'
+        ORDER BY target_ref, created_at DESC
+        """,
+        (kind,),
+    )
+    return {str(row["target_ref"]): row for row in rows}
+
+
+def _docker_updates_payload() -> dict[str, Any]:
+    stacks = site.load_stacks()
+    check_jobs = _latest_stack_job_map("docker_check")
+    update_jobs = _latest_stack_job_map("docker_update")
+    items: list[dict[str, Any]] = []
+
+    for stack in stacks:
+        stack_name = str(stack.get("name") or "").strip()
+        if not stack_name:
+            continue
+
+        check_access = jobs.stack_job_access("docker_check", stack_name, {})
+        live_access = jobs.stack_job_access("docker_update", stack_name, {"dry_run": False})
+        dry_access = jobs.stack_job_access("docker_update", stack_name, {"dry_run": True})
+        latest_check = check_jobs.get(stack_name)
+        latest_update = update_jobs.get(stack_name)
+
+        check_result = (latest_check or {}).get("result") or {}
+        update_result = (latest_update or {}).get("result") or {}
+        report = check_result.get("report") if isinstance(check_result, dict) else {}
+        if not isinstance(report, dict):
+            report = {}
+
+        check_job_status = str((latest_check or {}).get("status") or "").strip().lower()
+        if latest_check is None:
+            inspection_state = "never_checked"
+        elif check_job_status == "completed":
+            inspection_state = str(report.get("status") or "completed")
+        else:
+            inspection_state = check_job_status or "unknown"
+
+        update_summary = update_result.get("update_summary") if isinstance(update_result, dict) else {}
+        if not isinstance(update_summary, dict):
+            update_summary = {}
+
+        item = {
+            **stack,
+            "project_dir": str(stack.get("project_dir") or stack.get("path") or ""),
+            "job_access": {
+                "docker_check": check_access,
+                "docker_update_live": live_access,
+                "docker_update_dry_run": dry_access,
+            },
+            "inspection": {
+                "state": inspection_state,
+                "job": latest_check,
+                "report": report,
+                "checked_at": report.get("checked_at")
+                or (latest_check or {}).get("finished_at")
+                or (latest_check or {}).get("started_at")
+                or (latest_check or {}).get("created_at"),
+                "error": str(check_result.get("error") or ""),
+            },
+            "latest_update": {
+                "job": latest_update,
+                "status": str((latest_update or {}).get("status") or "").strip().lower() or "never_run",
+                "finished_at": (latest_update or {}).get("finished_at"),
+                "error": str(update_result.get("error") or update_result.get("update_summary_error") or ""),
+                "summary": update_summary,
+                "artifacts": update_result.get("artifacts") if isinstance(update_result, dict) else [],
+            },
+        }
+        item["selection_eligible"] = bool(
+            report.get("status") == "outdated" and live_access.get("eligible")
+        )
+        items.append(item)
+
+    summary = {
+        "total_stacks": len(items),
+        "checkable_stacks": sum(1 for item in items if item["job_access"]["docker_check"]["eligible"]),
+        "checked_stacks": sum(1 for item in items if item["inspection"]["state"] not in {"never_checked", "queued", "pending_approval", "running"}),
+        "outdated_stacks": sum(1 for item in items if (item["inspection"]["report"] or {}).get("status") == "outdated"),
+        "outdated_images": sum(int((item["inspection"]["report"] or {}).get("outdated_count") or 0) for item in items),
+        "selectable_stacks": sum(1 for item in items if item["selection_eligible"]),
+        "blocked_live_updates": sum(
+            1
+            for item in items
+            if (item["inspection"]["report"] or {}).get("status") == "outdated"
+            and not item["job_access"]["docker_update_live"]["eligible"]
+        ),
+        "running_checks": sum(1 for item in items if item["inspection"]["state"] in {"queued", "pending_approval", "running"}),
+        "failed_checks": sum(1 for item in items if item["inspection"]["state"] == "failed"),
+        "running_updates": sum(
+            1
+            for item in items
+            if str((item["latest_update"]["job"] or {}).get("status") or "").strip().lower() in {"queued", "pending_approval", "running"}
+        ),
+    }
+
+    return {
+        "summary": summary,
+        "items": items,
+    }
+
+
 def _settings_payload() -> dict[str, Any]:
     bootstrap_token = auth.ensure_bootstrap_token()
     public_settings = runtime_settings.get_public_settings()
@@ -187,6 +299,7 @@ def _settings_payload() -> dict[str, Any]:
         "ui": {
             "app_name": config.APP_NAME,
             "app_version": config.APP_VERSION,
+            "app_display_name": config.APP_DISPLAY_NAME,
         },
         "site_name": config.SITE_NAME,
         "site_root": str(site.site_root()),
@@ -211,11 +324,23 @@ def _settings_payload() -> dict[str, Any]:
     }
 
 
+@app.get("/api/v1/version")
+def version() -> dict[str, str]:
+    return {
+        "app_name": config.APP_NAME,
+        "app_version": config.APP_VERSION,
+        "app_display_name": config.APP_DISPLAY_NAME,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "version": config.APP_VERSION,
+        "app_name": config.APP_NAME,
+        "app_version": config.APP_VERSION,
+        "app_display_name": config.APP_DISPLAY_NAME,
         "site": config.SITE_NAME,
     }
 
@@ -264,6 +389,12 @@ def list_job_kinds(username: str = Depends(auth.require_user)) -> dict[str, Any]
 def stacks(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     return {"items": site.load_stacks()}
+
+
+@app.get("/api/v1/docker/updates")
+def docker_updates(username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    return _docker_updates_payload()
 
 
 @app.get("/api/v1/hosts")

@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +191,9 @@ def capabilities() -> list[str]:
         caps.add("docker")
         caps.add("docker-exec")
         caps.add("docker-compose-discovery")
+        caps.add("docker-stack-inspect")
+    if AGENT_MODE in {"compose", "container", "systemd"}:
+        caps.add("agent-self-update")
     helper_actions = host_maintenance_actions()
     for action, capability in HOST_MAINTENANCE_CAPABILITIES.items():
         if action not in helper_actions:
@@ -437,18 +443,300 @@ def reboot_proxmox(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _compose_command(compose_env_files: list[str]) -> list[str] | None:
+    base = compose_base_command()
+    if base is None:
+        return None
+    command = base[:]
+    for env_file in compose_env_files:
+        command.extend(["--env-file", str(env_file)])
+    return command
+
+
+def _compose_config_json(project_dir: str, compose_env_files: list[str]) -> dict[str, Any]:
+    command = _compose_command(compose_env_files)
+    if command is None:
+        raise RuntimeError("docker compose command is not available")
+    rc, stdout = run_command(command + ["config", "--format", "json"], cwd=project_dir)
+    if rc != 0:
+        raise RuntimeError(stdout or "compose config failed")
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"compose config returned invalid json: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("compose config returned a non-object payload")
+    return parsed
+
+
+def _normalize_repo(ref: str) -> str:
+    value = str(ref or "").split("@", 1)[0]
+    last_slash = value.rfind("/")
+    last_colon = value.rfind(":")
+    if last_colon > last_slash:
+        return value[:last_colon]
+    return value
+
+
+def _short_digest(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    if value.startswith("sha256:"):
+        return value[7:19]
+    return value[:12]
+
+
+def _local_digest(image_attrs: dict[str, Any], ref: str) -> str | None:
+    repo = _normalize_repo(ref)
+    for digest_ref in image_attrs.get("RepoDigests") or []:
+        if digest_ref.startswith(f"{repo}@"):
+            return digest_ref.split("@", 1)[1]
+    if "@sha256:" in ref:
+        return ref.split("@", 1)[1]
+    return None
+
+
+def _registry_digest(
+    client: docker.DockerClient,
+    ref: str,
+    cache: dict[str, dict[str, str | None]],
+) -> tuple[str | None, str | None]:
+    cached = cache.get(ref)
+    if cached:
+        return cached.get("digest"), cached.get("error")
+
+    try:
+        registry_data = client.images.get_registry_data(ref)
+        digest = registry_data.id or (registry_data.attrs.get("Descriptor") or {}).get("digest")
+        payload = {"digest": digest, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        payload = {"digest": None, "error": str(exc)}
+    cache[ref] = payload
+    return payload["digest"], payload["error"]
+
+
+def _inspect_stack_services(
+    project_dir: str,
+    compose_env_files: list[str],
+) -> dict[str, Any]:
+    config_payload = _compose_config_json(project_dir, compose_env_files)
+    client = docker_client()
+    if client is None:
+        raise RuntimeError("docker engine is not available")
+
+    registry_cache: dict[str, dict[str, str | None]] = {}
+    report = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "service_count": 0,
+        "image_count": 0,
+        "outdated_count": 0,
+        "status": "unknown",
+        "services": [],
+    }
+    try:
+        services = config_payload.get("services") or {}
+        for service_name in sorted(services):
+            service_def = services.get(service_name) or {}
+            ref = str(service_def.get("image") or "").strip()
+            service_report = {
+                "service": service_name,
+                "ref": ref,
+                "status": "unknown",
+                "local_digest": None,
+                "remote_digest": None,
+                "local_short": "unknown",
+                "remote_short": "unknown",
+            }
+            report["service_count"] += 1
+            if not ref:
+                service_report["status"] = "no-image-ref"
+                report["services"].append(service_report)
+                continue
+
+            report["image_count"] += 1
+            try:
+                image_attrs = client.images.get(ref).attrs
+                service_report["local_digest"] = _local_digest(image_attrs, ref)
+            except Exception as exc:  # noqa: BLE001
+                service_report["status"] = "missing-local"
+                service_report["error"] = str(exc)
+
+            service_report["remote_digest"], registry_error = _registry_digest(client, ref, registry_cache)
+            if registry_error and service_report["status"] == "unknown":
+                service_report["status"] = "registry-error"
+                service_report["error"] = registry_error
+
+            if service_report["status"] == "unknown":
+                if not service_report["local_digest"]:
+                    service_report["status"] = "unknown-local-digest"
+                elif service_report["local_digest"] == service_report["remote_digest"]:
+                    service_report["status"] = "up-to-date"
+                else:
+                    service_report["status"] = "outdated"
+                    report["outdated_count"] += 1
+
+            service_report["local_short"] = _short_digest(str(service_report.get("local_digest") or ""))
+            service_report["remote_short"] = _short_digest(str(service_report.get("remote_digest") or ""))
+            report["services"].append(service_report)
+    finally:
+        client.close()
+
+    if any(item["status"] == "outdated" for item in report["services"]):
+        report["status"] = "outdated"
+    elif any(item["status"] in {"registry-error", "missing-local", "unknown-local-digest"} for item in report["services"]):
+        report["status"] = "warning"
+    elif report["image_count"] == 0:
+        report["status"] = "no-images"
+    else:
+        report["status"] = "up-to-date"
+    return report
+
+
+def _capture_stack_state(project_dir: str, compose_env_files: list[str]) -> dict[str, Any]:
+    config_payload = _compose_config_json(project_dir, compose_env_files)
+    command = _compose_command(compose_env_files)
+    if command is None:
+        raise RuntimeError("docker compose command is not available")
+
+    services: list[dict[str, Any]] = []
+    for service_name in sorted(config_payload.get("services") or {}):
+        service_def = (config_payload.get("services") or {}).get(service_name) or {}
+        rc_ps, out_ps = run_command(command + ["ps", "-q", service_name], cwd=project_dir)
+        rc_images, out_images = run_command(command + ["images", "-q", service_name], cwd=project_dir)
+        services.append(
+            {
+                "service": service_name,
+                "configured_image_ref": str(service_def.get("image") or ""),
+                "container_id": out_ps.strip() if rc_ps == 0 else "",
+                "image_id": out_images.strip() if rc_images == 0 else "",
+            }
+        )
+    return {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "stack_path": project_dir,
+        "env_files": compose_env_files,
+        "services": services,
+    }
+
+
+def _safe_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-")
+    return token or "stack"
+
+
+def _stack_name_from_payload(payload: dict[str, Any]) -> str:
+    explicit = str(payload.get("stack_name") or "").strip()
+    if explicit:
+        return explicit
+    selected = payload.get("selected_stacks") or []
+    if isinstance(selected, list):
+        for item in selected:
+            value = str(item or "").strip()
+            if value:
+                return value
+    return "stack"
+
+
+def _write_rollback_capture(stack_name: str, state: dict[str, Any]) -> dict[str, str]:
+    capture_root = STATE_DIR / "rollbacks" / _safe_token(stack_name)
+    capture_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    capture_path = capture_root / f"{stamp}.json"
+    latest_path = capture_root / "latest.json"
+    encoded = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    capture_path.write_text(encoded, encoding="utf-8")
+    latest_path.write_text(encoded, encoding="utf-8")
+    return {
+        "capture_path": str(capture_path),
+        "latest_path": str(latest_path),
+    }
+
+
+def _summarize_stack_changes(before: dict[str, Any], after: dict[str, Any], stack_name: str, host: str) -> dict[str, Any]:
+    before_services = {str(item.get("service") or ""): item for item in before.get("services", [])}
+    changes: list[dict[str, Any]] = []
+    for current in after.get("services", []):
+        service_name = str(current.get("service") or "")
+        previous = before_services.get(service_name, {})
+        before_ref = str(previous.get("configured_image_ref") or "")
+        after_ref = str(current.get("configured_image_ref") or "")
+        before_image = str(previous.get("image_id") or "")
+        after_image = str(current.get("image_id") or "")
+        if before_ref == after_ref and before_image == after_image:
+            continue
+        changes.append(
+            {
+                "service": service_name,
+                "from_ref": before_ref,
+                "to_ref": after_ref,
+                "from_image": before_image,
+                "to_image": after_image,
+                "from_short": _short_digest(before_image),
+                "to_short": _short_digest(after_image),
+            }
+        )
+    stack_summary = {
+        "stack": stack_name,
+        "host": host,
+        "changed_services": len(changes),
+        "services": changes,
+    }
+    return {
+        "stack_count": 1,
+        "changed_stacks": 1 if changes else 0,
+        "changed_services": len(changes),
+        "stacks": [stack_summary],
+    }
+
+
+def docker_check(payload: dict[str, Any]) -> dict[str, Any]:
+    project_dir = str(payload.get("project_dir") or "").strip()
+    stack_name = _stack_name_from_payload(payload)
+    host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
+    if not project_dir:
+        return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
+
+    compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]
+    try:
+        report = _inspect_stack_services(project_dir, compose_env_files)
+    except Exception as exc:  # noqa: BLE001
+        return {"exit_code": 1, "error": str(exc), "stdout": str(exc)}
+
+    report.update(
+        {
+            "name": stack_name,
+            "host": host,
+            "project_dir": project_dir,
+            "risk": str(payload.get("risk") or ""),
+            "catalog_source": str(payload.get("catalog_source") or ""),
+            "backup_before": bool(payload.get("backup_before")),
+            "snapshot_before": bool(payload.get("snapshot_before")),
+        }
+    )
+    stdout = (
+        f"Checked {stack_name} on {host}: "
+        f"{report['outdated_count']} outdated image"
+        f"{'' if report['outdated_count'] == 1 else 's'} across {report['image_count']} tracked service"
+        f"{'' if report['image_count'] == 1 else 's'}."
+    )
+    return {
+        "exit_code": 0,
+        "stdout": stdout,
+        "report": report,
+    }
+
+
 def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(payload.get("project_dir") or "").strip()
     if not project_dir:
         return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
-    compose_env_files = payload.get("compose_env_files", [])
-    compose_command = compose_base_command()
+    stack_name = _stack_name_from_payload(payload)
+    host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
+    compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]
+    compose_command = _compose_command(compose_env_files)
     if compose_command is None:
         return {"exit_code": 1, "error": "docker compose command is not available", "stdout": ""}
-    command = compose_command[:]
-    for env_file in compose_env_files:
-        command.extend(["--env-file", env_file])
-    rc_config, out_config = run_command(command + ["config"], cwd=project_dir)
+    rc_config, out_config = run_command(compose_command + ["config"], cwd=project_dir)
     if rc_config != 0:
         return {"exit_code": rc_config, "stdout": out_config}
     if bool(payload.get("dry_run", False)):
@@ -461,11 +749,137 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
                 ]
             ).strip(),
         }
-    rc_pull, out_pull = run_command(command + ["pull"], cwd=project_dir)
+
+    artifacts: list[dict[str, Any]] = []
+    rollback_capture: dict[str, Any] | None = None
+    before_state: dict[str, Any] | None = None
+    try:
+        before_state = _capture_stack_state(project_dir, compose_env_files)
+        before_state.update({"stack_name": stack_name, "host": host})
+        rollback_capture = _write_rollback_capture(stack_name, before_state)
+        artifacts.append(
+            {
+                "kind": "rollback",
+                "target_ref": stack_name,
+                "path": rollback_capture["capture_path"],
+                "container_path": rollback_capture["capture_path"],
+                "source": "agent-docker-update",
+                "host": host,
+                "latest_path": rollback_capture["latest_path"],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "exit_code": 1,
+            "error": f"failed to capture rollback metadata: {exc}",
+            "stdout": "\n".join([out_config, str(exc)]).strip(),
+        }
+
+    rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
     if rc_pull != 0:
-        return {"exit_code": rc_pull, "stdout": out_pull}
-    rc_up, out_up = run_command(command + ["up", "-d"], cwd=project_dir)
-    return {"exit_code": rc_up, "stdout": "\n".join([out_config, out_pull, out_up]).strip()}
+        return {"exit_code": rc_pull, "stdout": "\n".join([out_config, out_pull]).strip(), "artifacts": artifacts}
+    rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
+    result: dict[str, Any] = {
+        "exit_code": rc_up,
+        "stdout": "\n".join([out_config, out_pull, out_up]).strip(),
+        "artifacts": artifacts,
+    }
+    if rollback_capture:
+        result["rollback_capture"] = rollback_capture
+    if rc_up == 0 and before_state is not None:
+        try:
+            after_state = _capture_stack_state(project_dir, compose_env_files)
+            result["update_summary"] = _summarize_stack_changes(before_state, after_state, stack_name, host)
+        except Exception as exc:  # noqa: BLE001
+            result["update_summary_error"] = str(exc)
+    return result
+
+
+def agent_update(payload: dict[str, Any]) -> dict[str, Any]:
+    update_command = str(payload.get("update_command") or "").strip()
+    if not update_command:
+        return {"exit_code": 1, "error": "update_command is required", "stdout": ""}
+
+    update_mode = str(payload.get("update_mode") or AGENT_MODE or "unknown").strip() or "unknown"
+    target_version = str(payload.get("target_version") or payload.get("release_ref") or "").strip()
+    update_root = STATE_DIR / "updates"
+    update_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    log_path = update_root / f"agent-update-{stamp}.log"
+
+    if update_mode == "systemd" and shutil.which("systemd-run"):
+        unit_name = f"rackpatch-agent-update-{stamp}"
+        background_command = f"sleep 2; {update_command} >> {shlex.quote(str(log_path))} 2>&1"
+        rc, stdout = run_command(
+            [
+                "systemd-run",
+                "--unit",
+                unit_name,
+                "--collect",
+                "bash",
+                "-lc",
+                background_command,
+            ]
+        )
+        if rc != 0:
+            return {"exit_code": rc, "error": "failed to schedule systemd agent update", "stdout": stdout}
+        return {
+            "exit_code": 0,
+            "stdout": "\n".join(
+                [
+                    stdout.strip(),
+                    f"Scheduled agent update for {target_version or 'configured ref'} via transient unit {unit_name}.",
+                    f"Update log: {log_path}",
+                ]
+            ).strip(),
+            "scheduled": True,
+            "update_mode": update_mode,
+            "target_version": target_version or None,
+            "log_path": str(log_path),
+            "unit_name": unit_name,
+        }
+
+    wrapper_path = update_root / f"agent-update-{stamp}.sh"
+    wrapper_path.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f"sleep {int(payload.get('delay_seconds') or 2)}",
+                f"{update_command} >> {shlex.quote(str(log_path))} 2>&1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    wrapper_path.chmod(0o700)
+
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        log_handle.write(f"[{datetime.now(timezone.utc).isoformat()}] scheduling agent update mode={update_mode}\n")
+        process = subprocess.Popen(
+            ["bash", str(wrapper_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    return {
+        "exit_code": 0,
+        "stdout": "\n".join(
+            [
+                f"Scheduled agent update for {target_version or 'configured ref'} in {update_mode} mode.",
+                f"Background process id: {process.pid}",
+                f"Update log: {log_path}",
+            ]
+        ),
+        "scheduled": True,
+        "update_mode": update_mode,
+        "target_version": target_version or None,
+        "log_path": str(log_path),
+        "pid": process.pid,
+    }
 
 
 def execute_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -487,8 +901,16 @@ def execute_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         result = reboot_proxmox(payload)
         status = "completed" if result["exit_code"] == 0 else "failed"
         return status, result
+    if kind == "docker_check":
+        result = docker_check(payload)
+        status = "completed" if result["exit_code"] == 0 else "failed"
+        return status, result
     if kind == "docker_update":
         result = docker_update(payload)
+        status = "completed" if result["exit_code"] == 0 else "failed"
+        return status, result
+    if kind == "agent_update":
+        result = agent_update(payload)
         status = "completed" if result["exit_code"] == 0 else "failed"
         return status, result
     return "failed", {"error": f"unsupported agent job kind: {kind}"}

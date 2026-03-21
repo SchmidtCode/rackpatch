@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
-Version in this repo: `v0.3.5`
+Version in this repo: `v0.3.6`
 
 ## What rackpatch does
 
@@ -13,7 +13,7 @@ Version in this repo: `v0.3.5`
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
-## v0.3.5 highlights
+## v0.3.6 highlights
 
 - Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
 - Mobile-friendly navigation, tables, and install/update previews.
@@ -172,41 +172,41 @@ Docker updates no longer fall back to the legacy worker path either. Live update
 Example container install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.5/scripts/install-agent.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.6/scripts/install-agent.sh | bash -s -- \
   --server-url http://YOUR-RACKPATCH-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
-  --image ghcr.io/schmidtcode/rackpatch-agent:0.3.5
+  --image ghcr.io/schmidtcode/rackpatch-agent:0.3.6
 ```
 
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.5/scripts/update-rackpatch.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.6/scripts/update-rackpatch.sh | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.5
+  --ref v0.3.6
 ```
 
 Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.5/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.6/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode compose \
   --preset packages \
   --compose-dir /srv/compose/rackpatch-agent \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref v0.3.5
+  --install-ref v0.3.6
 ```
 
 Example host-maintenance enablement for Proxmox nodes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.5/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.6/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode systemd \
   --preset proxmox \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref v0.3.5
+  --install-ref v0.3.6
 ```
 
 If you want a custom mix, pass `--allow-actions package_check,package_patch,proxmox_patch,proxmox_reboot` with only the actions you want that node to advertise.
@@ -291,7 +291,7 @@ GitHub automation now builds and publishes the three custom images, and the trac
 GitHub automation now has two jobs under `.github/workflows/`:
 
 - `ci.yml`: runs `make validate` and verifies that the three custom images build on pull requests and pushes to `main`
-- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.5`
+- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.6`
 
 Published image names:
 
@@ -305,13 +305,13 @@ Suggested first publish flow:
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.5 -m "v0.3.5"
-git push origin refs/tags/v0.3.5
+git tag -a v0.3.6 -m "v0.3.6"
+git push origin refs/tags/v0.3.6
 ```
 
 After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR.
 
-## Release flow for v0.3.5
+## Release flow for v0.3.6
 
 If `origin` is already configured, confirm it first:
 
@@ -323,18 +323,18 @@ Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.3.5
-git push -u origin release/v0.3.5
+git switch -c release/v0.3.6
+git push -u origin release/v0.3.6
 ```
 
-Open a pull request from `release/v0.3.5` into `main`. After the PR merges:
+Open a pull request from `release/v0.3.6` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.5 -m "v0.3.5"
-git push origin refs/tags/v0.3.5
+git tag -a v0.3.6 -m "v0.3.6"
+git push origin refs/tags/v0.3.6
 ```
 
 Suggested GitHub release notes:
