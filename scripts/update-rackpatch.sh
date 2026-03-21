@@ -45,6 +45,51 @@ branch_exists() {
   git ls-remote --exit-code --heads "${repo_url}" "${ref}" >/dev/null 2>&1
 }
 
+normalize_image_tag() {
+  local value="${1:-}"
+  value="${value#v}"
+  value="${value#V}"
+  if [[ -z "${value}" || "${value}" == "main" || "${value}" == "master" ]]; then
+    printf 'latest\n'
+    return 0
+  fi
+  if [[ "${value}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+  printf 'latest\n'
+}
+
+set_env_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if [[ ! -f "${file}" ]]; then
+    touch "${file}"
+  fi
+  if grep -q "^${key}=" "${file}"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+  fi
+}
+
+compose_args() {
+  local -a args=(-f "${install_dir}/docker-compose.yml")
+  if [[ -f "${install_dir}/.env" ]]; then
+    args=(--env-file "${install_dir}/.env" "${args[@]}")
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
+run_compose() {
+  local -a args=()
+  while IFS= read -r line; do
+    args+=("${line}")
+  done < <(compose_args)
+  docker compose "${args[@]}" "$@"
+}
+
 if [[ ! -d "${install_dir}/.git" ]]; then
   rm -rf "${install_dir}"
   if branch_exists; then
@@ -64,5 +109,13 @@ else
   fi
 fi
 
-docker compose -f "${install_dir}/docker-compose.yml" up -d --build --remove-orphans
+if [[ ! -f "${install_dir}/.env" && -f "${install_dir}/.env.example" ]]; then
+  cp "${install_dir}/.env.example" "${install_dir}/.env"
+fi
+if [[ -f "${install_dir}/.env" ]]; then
+  set_env_value "${install_dir}/.env" "RACKPATCH_VERSION" "$(normalize_image_tag "${ref}")"
+fi
+
+run_compose pull
+run_compose up -d --remove-orphans
 echo "rackpatch updated in ${install_dir} to ${ref}"

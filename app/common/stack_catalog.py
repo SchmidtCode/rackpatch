@@ -14,7 +14,6 @@ DEFAULT_DISCOVERED_RISK = "medium"
 DEFAULT_DISCOVERED_UPDATE_MODE = "approve"
 DISCOVERED_ORDER_BASE = 1000
 DISCOVERED_ORDER_STEP = 10
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -25,17 +24,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def defined_stacks_path() -> Path:
-    site_root = config.SITE_ROOT
-    if not site_root.exists():
-        try:
-            relative = site_root.relative_to("/workspace")
-        except ValueError:
-            relative = None
-        if relative is not None:
-            candidate = REPO_ROOT / relative
-            if candidate.exists():
-                site_root = candidate
-    return site_root / "stacks.yml"
+    return config.resolve_runtime_path(config.SITE_ROOT) / "stacks.yml"
 
 
 def load_defined_stacks(path: Path | None = None) -> list[dict[str, Any]]:

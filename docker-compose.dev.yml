@@ -1,0 +1,60 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.rackpatch
+    working_dir: /workspace
+    environment:
+      RACKPATCH_RUNTIME_ROOT: /workspace
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      PYTHONPATH: /workspace/app:/opt/rackpatch/app
+    volumes:
+      - .:/workspace
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.rackpatch
+    working_dir: /workspace
+    environment:
+      RACKPATCH_RUNTIME_ROOT: /workspace
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      PYTHONPATH: /workspace/app:/opt/rackpatch/app
+    volumes:
+      - .:/workspace
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      PYTHONPATH: /workspace/app:/opt/rackpatch-app
+    volumes:
+      - .:/workspace
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+
+  telegram:
+    build:
+      context: .
+      dockerfile: Dockerfile.rackpatch
+    environment:
+      RACKPATCH_RUNTIME_ROOT: /workspace
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      PYTHONPATH: /workspace/app:/opt/rackpatch/app
+    volumes:
+      - .:/workspace
+
+  notify:
+    build:
+      context: .
+      dockerfile: Dockerfile.rackpatch
+    environment:
+      PYTHONPATH: /workspace/app:/opt/rackpatch/app
+    volumes:
+      - .:/workspace

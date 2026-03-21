@@ -8,9 +8,6 @@ import yaml
 from common import config
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -18,19 +15,8 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
-def _resolve_workspace_path(path: Path) -> Path:
-    if path.exists():
-        return path
-    try:
-        relative = path.relative_to("/workspace")
-    except ValueError:
-        return path
-    candidate = REPO_ROOT / relative
-    return candidate if candidate.exists() else path
-
-
 def site_root() -> Path:
-    return _resolve_workspace_path(config.SITE_ROOT)
+    return config.resolve_runtime_path(config.SITE_ROOT)
 
 
 def site_name() -> str:

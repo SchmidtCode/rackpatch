@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--name NAME] [--labels a,b] [--install-source PATH] [--install-ref REF]
+  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--name NAME] [--labels a,b] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -13,12 +13,16 @@ server_url=""
 bootstrap_token=""
 mode="container"
 compose_dir="/srv/compose/rackpatch-agent"
+install_dir="/opt/rackpatch-agent"
 name="$(hostname)"
 labels=""
+image=""
 install_source=""
 install_ref=""
 tmp_root=""
 systemd_agent_user="rackpatch-agent"
+compose_override_name="compose.host-maintenance.yml"
+agent_env_name="agent.env"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +50,10 @@ while [[ $# -gt 0 ]]; do
       labels="$2"
       shift 2
       ;;
+    --image)
+      image="$2"
+      shift 2
+      ;;
     --install-source)
       install_source="$2"
       shift 2
@@ -66,14 +74,6 @@ if [[ -z "${server_url}" || -z "${bootstrap_token}" ]]; then
   exit 1
 fi
 
-if [[ -z "${install_source}" ]]; then
-  if [[ -n "${BASH_SOURCE[0]-}" ]]; then
-    install_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  else
-    install_source="$(pwd)"
-  fi
-fi
-
 cleanup() {
   if [[ -n "${tmp_root}" && -d "${tmp_root}" ]]; then
     rm -rf "${tmp_root}"
@@ -81,7 +81,71 @@ cleanup() {
 }
 trap cleanup EXIT
 
+default_install_source() {
+  if [[ -n "${install_source}" ]]; then
+    return
+  fi
+  if [[ -z "${BASH_SOURCE[0]-}" ]]; then
+    return
+  fi
+  local candidate
+  candidate="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if [[ -f "${candidate}/Dockerfile.agent" ]]; then
+    install_source="${candidate}"
+  fi
+}
+
+github_repo_slug() {
+  local value="${1:-}"
+  value="${value%/}"
+  if [[ "${value}" =~ ^https?://github\.com/([^/]+)/([^/]+)(\.git)?$ ]]; then
+    printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  if [[ "${value}" =~ ^ssh://git@github\.com/([^/]+)/([^/]+)(\.git)?$ ]]; then
+    printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  if [[ "${value}" =~ ^git@github\.com:([^/]+)/([^/]+)(\.git)?$ ]]; then
+    printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+normalize_image_tag() {
+  local ref="${1:-}"
+  ref="${ref#v}"
+  ref="${ref#V}"
+  if [[ -z "${ref}" || "${ref}" == "main" || "${ref}" == "master" ]]; then
+    printf 'latest\n'
+    return 0
+  fi
+  if [[ "${ref}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf '%s\n' "${ref}"
+    return 0
+  fi
+  printf 'latest\n'
+}
+
+derive_agent_image() {
+  if [[ -n "${image}" ]]; then
+    printf '%s\n' "${image}"
+    return 0
+  fi
+  local slug
+  if ! slug="$(github_repo_slug "${install_source}")"; then
+    return 1
+  fi
+  local owner="${slug%%/*}"
+  printf 'ghcr.io/%s/rackpatch-agent:%s\n' "${owner,,}" "$(normalize_image_tag "${install_ref}")"
+}
+
 resolve_source() {
+  if [[ -z "${install_source}" ]]; then
+    echo "install source is required for source-based installs" >&2
+    exit 1
+  fi
   if [[ -d "${install_source}" ]]; then
     printf '%s\n' "${install_source}"
     return
@@ -100,8 +164,89 @@ resolve_source() {
   exit 1
 }
 
-src_root="$(resolve_source)"
-compose_override_name="compose.host-maintenance.yml"
+write_image_env() {
+  local target_dir="$1"
+  local agent_image="$2"
+  cat > "${target_dir}/${agent_env_name}" <<EOF
+RACKPATCH_AGENT_IMAGE=${agent_image}
+EOF
+}
+
+compose_args() {
+  local target_dir="$1"
+  local -a args=(--env-file "${target_dir}/${agent_env_name}" -f "${target_dir}/compose.yml")
+  if [[ -f "${target_dir}/${compose_override_name}" ]]; then
+    args+=(-f "${target_dir}/${compose_override_name}")
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
+run_compose() {
+  local target_dir="$1"
+  shift
+  local -a args=()
+  while IFS= read -r line; do
+    args+=("${line}")
+  done < <(compose_args "${target_dir}")
+  docker compose "${args[@]}" "$@"
+}
+
+prepare_source_context() {
+  local src_root="$1"
+  local target_dir="$2"
+  rm -rf "${target_dir}/src"
+  mkdir -p "${target_dir}/src"
+  cp -R "${src_root}/app" "${target_dir}/src/app"
+  cp "${src_root}/Dockerfile.agent" "${target_dir}/src/Dockerfile.agent"
+  cp "${src_root}/requirements-rackpatch.txt" "${target_dir}/src/requirements-rackpatch.txt"
+}
+
+write_compose_file() {
+  local target_dir="$1"
+  local runtime_mode="$2"
+  local state_mount="$3"
+  local use_build="$4"
+
+  cat > "${target_dir}/compose.yml" <<EOF
+services:
+  rackpatch-agent:
+    container_name: rackpatch-agent
+    image: \${RACKPATCH_AGENT_IMAGE}
+EOF
+  if [[ "${use_build}" == "yes" ]]; then
+    cat >> "${target_dir}/compose.yml" <<'EOF'
+    build:
+      context: ./src
+      dockerfile: Dockerfile.agent
+EOF
+  fi
+  cat >> "${target_dir}/compose.yml" <<EOF
+    restart: unless-stopped
+    environment:
+      RACKPATCH_SERVER_URL: ${server_url}
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
+      RACKPATCH_AGENT_NAME: ${name}
+      RACKPATCH_AGENT_LABELS: ${labels}
+      RACKPATCH_AGENT_MODE: ${runtime_mode}
+      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
+EOF
+  if [[ "${runtime_mode}" == "compose" ]]; then
+    cat >> "${target_dir}/compose.yml" <<EOF
+      RACKPATCH_AGENT_COMPOSE_DIR: ${target_dir}
+EOF
+  else
+    cat >> "${target_dir}/compose.yml" <<EOF
+      RACKPATCH_AGENT_INSTALL_DIR: ${target_dir}
+EOF
+  fi
+  cat >> "${target_dir}/compose.yml" <<EOF
+    volumes:
+      - ${state_mount}:/var/lib/rackpatch-agent
+      - /var/run/docker.sock:/var/run/docker.sock
+EOF
+}
+
+default_install_source
 
 if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "systemd" ]]; then
   echo "unsupported mode: ${mode}" >&2
@@ -109,80 +254,57 @@ if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "system
   exit 1
 fi
 
-  if [[ "${mode}" == "compose" ]]; then
-  install_dir="${compose_dir}"
-  mkdir -p "${install_dir}" "${install_dir}/state"
-  rm -rf "${install_dir}/src"
-  mkdir -p "${install_dir}/src"
-  cp -R "${src_root}/app" "${install_dir}/src/app"
-  cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
-  cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/src/requirements-rackpatch.txt"
-  cat > "${install_dir}/compose.yml" <<EOF
-services:
-  rackpatch-agent:
-    container_name: rackpatch-agent
-    image: rackpatch-agent:local
-    build:
-      context: ./src
-      dockerfile: Dockerfile.agent
-    restart: unless-stopped
-    environment:
-      RACKPATCH_SERVER_URL: ${server_url}
-      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
-      RACKPATCH_AGENT_NAME: ${name}
-      RACKPATCH_AGENT_LABELS: ${labels}
-      RACKPATCH_AGENT_MODE: compose
-      RACKPATCH_AGENT_COMPOSE_DIR: ${install_dir}
-      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
-    volumes:
-      - ./state:/var/lib/rackpatch-agent
-      - /var/run/docker.sock:/var/run/docker.sock
-EOF
-  compose_args=(-f "${install_dir}/compose.yml")
-  if [[ -f "${install_dir}/${compose_override_name}" ]]; then
-    compose_args+=(-f "${install_dir}/${compose_override_name}")
+if [[ "${mode}" == "compose" ]]; then
+  local_image="rackpatch-agent:local"
+  agent_image="$(derive_agent_image || true)"
+  source_build="no"
+  if [[ -z "${agent_image}" ]]; then
+    source_build="yes"
+    agent_image="${local_image}"
   fi
-  docker compose "${compose_args[@]}" up -d --build
-  echo "compose agent installed under ${install_dir}"
+  mkdir -p "${compose_dir}" "${compose_dir}/state"
+  if [[ "${source_build}" == "yes" ]]; then
+    src_root="$(resolve_source)"
+    prepare_source_context "${src_root}" "${compose_dir}"
+  fi
+  write_image_env "${compose_dir}" "${agent_image}"
+  write_compose_file "${compose_dir}" "compose" "./state" "${source_build}"
+  if [[ "${source_build}" == "yes" ]]; then
+    run_compose "${compose_dir}" up -d --build
+  else
+    run_compose "${compose_dir}" pull rackpatch-agent
+    run_compose "${compose_dir}" up -d
+  fi
+  echo "compose agent installed under ${compose_dir}"
   exit 0
 fi
 
 if [[ "${mode}" == "container" ]]; then
-  install_dir="/opt/rackpatch-agent"
-  mkdir -p "${install_dir}"
-  rm -rf "${install_dir}/src"
-  mkdir -p "${install_dir}/src"
-  cp -R "${src_root}/app" "${install_dir}/src/app"
-  cp "${src_root}/Dockerfile.agent" "${install_dir}/src/Dockerfile.agent"
-  cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/src/requirements-rackpatch.txt"
-  docker build -t rackpatch-agent:local -f "${install_dir}/src/Dockerfile.agent" "${install_dir}/src"
-  cat > "${install_dir}/compose.yml" <<EOF
-services:
-  rackpatch-agent:
-    image: rackpatch-agent:local
-    restart: unless-stopped
-    environment:
-      RACKPATCH_SERVER_URL: ${server_url}
-      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${bootstrap_token}
-      RACKPATCH_AGENT_NAME: ${name}
-      RACKPATCH_AGENT_LABELS: ${labels}
-      RACKPATCH_AGENT_MODE: container
-      RACKPATCH_AGENT_INSTALL_DIR: ${install_dir}
-      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
-    volumes:
-      - /var/lib/rackpatch-agent:/var/lib/rackpatch-agent
-      - /var/run/docker.sock:/var/run/docker.sock
-EOF
-  compose_args=(-f "${install_dir}/compose.yml")
-  if [[ -f "${install_dir}/${compose_override_name}" ]]; then
-    compose_args+=(-f "${install_dir}/${compose_override_name}")
+  local_image="rackpatch-agent:local"
+  agent_image="$(derive_agent_image || true)"
+  source_build="no"
+  if [[ -z "${agent_image}" ]]; then
+    source_build="yes"
+    agent_image="${local_image}"
   fi
-  docker compose "${compose_args[@]}" up -d
+  mkdir -p "${install_dir}"
+  if [[ "${source_build}" == "yes" ]]; then
+    src_root="$(resolve_source)"
+    prepare_source_context "${src_root}" "${install_dir}"
+  fi
+  write_image_env "${install_dir}" "${agent_image}"
+  write_compose_file "${install_dir}" "container" "/var/lib/rackpatch-agent" "${source_build}"
+  if [[ "${source_build}" == "yes" ]]; then
+    run_compose "${install_dir}" up -d --build
+  else
+    run_compose "${install_dir}" pull rackpatch-agent
+    run_compose "${install_dir}" up -d
+  fi
   echo "container agent installed under ${install_dir}"
   exit 0
 fi
 
-install_dir="/opt/rackpatch-agent"
+src_root="$(resolve_source)"
 mkdir -p "${install_dir}"
 rm -rf "${install_dir}/app"
 cp -R "${src_root}/app" "${install_dir}/app"

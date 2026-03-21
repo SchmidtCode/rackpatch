@@ -6,6 +6,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+RACKPATCH_ROOT = Path(__file__).resolve().parents[1]
+
 
 def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
@@ -21,7 +23,7 @@ def main() -> int:
 
     stack_path = Path(args.stack_path)
     output_path = Path(args.output)
-    compose_cmd = ["/workspace/scripts/compose-wrapper.sh"]
+    compose_cmd = [str(RACKPATCH_ROOT / "scripts" / "compose-wrapper.sh")]
     for env_file in args.env_file:
         compose_cmd.extend(["--env-file", env_file])
 

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-RACKPATCH_ROOT = Path("/workspace")
+RACKPATCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import stack_catalog  # noqa: E402
@@ -53,7 +53,7 @@ def is_local_host(host: str | None) -> bool:
 
 
 def local_compose_command(stack: dict, *args: str) -> list[str]:
-    command = ["/workspace/scripts/compose-wrapper.sh"]
+    command = [str(RACKPATCH_ROOT / "scripts" / "compose-wrapper.sh")]
     for env_file in stack.get("compose_env_files", []):
         command.extend(["--env-file", env_file])
     command.extend(args)

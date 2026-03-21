@@ -58,7 +58,7 @@
     use_compose_wrapper = {{ 'True' if stack_execute_host in ['localhost', '127.0.0.1', ''] else 'False' }}
 
     def compose_cmd(*args: str) -> list[str]:
-        wrapper = Path("/workspace/scripts/compose-wrapper.sh")
+        wrapper = Path({{ (rackpatch_root ~ '/scripts/compose-wrapper.sh') | to_json }})
         docker_bin = shutil.which("docker")
         docker_compose_bin = shutil.which("docker-compose")
         if use_compose_wrapper and wrapper.exists():

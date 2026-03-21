@@ -12,7 +12,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - /workspace/scripts/render_stack_catalog.py
+          - "{{ rackpatch_root }}/scripts/render_stack_catalog.py"
       register: rendered_stack_catalog
       changed_when: false
 

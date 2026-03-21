@@ -65,7 +65,7 @@ def stack_host(stack: dict) -> str:
 
 
 def local_compose_command(stack: dict) -> list[str]:
-    command = ["/workspace/scripts/compose-wrapper.sh"]
+    command = [str(RACKPATCH_ROOT / "scripts" / "compose-wrapper.sh")]
     for env_file in stack.get("compose_env_files", []):
         command.extend(["--env-file", env_file])
     return command

@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
-Version in this repo: `v0.3.2`
+Version in this repo: `v0.3.4`
 
 ## What rackpatch does
 
@@ -13,13 +13,15 @@ Version in this repo: `v0.3.2`
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
-## v0.3.2 highlights
+## v0.3.4 highlights
 
 - Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
 - Mobile-friendly navigation, tables, and install/update previews.
 - Backend-generated job-kind metadata and install/update commands shared by the UI and automation.
 - Machine-readable `/api/v1/context` and `/api/v1/job-kinds` endpoints for AI operators and scripted setup.
 - GitHub-backed latest-version checks for the control plane and agents.
+- Published GHCR images are now the default deployment path for the control plane and containerized agents.
+- The main `docker-compose.yml` is now release-oriented, while `docker-compose.dev.yml` keeps local source builds available for development.
 - Safer public-repo prep with `make release-check` plus stricter ignore rules for secrets and private overlays.
 - Helper enable commands now use `sudo` in generated install previews and docs.
 - Compose and container helper installs now manage a stable runtime socket directory so host-maintenance helper access survives normal restarts and cleanly recreates on boot.
@@ -40,10 +42,13 @@ Version in this repo: `v0.3.2`
 ```bash
 cd /srv/compose/rackpatch
 cp .env.example .env
-docker compose up -d --build --remove-orphans
+docker compose pull
+docker compose up -d --remove-orphans
 ```
 
 The UI is available at `http://<host>:3011`.
+
+The default compose file now pulls published images from GHCR. `RACKPATCH_VERSION` defaults to the release version in `.env.example`, and `RACKPATCH_IMAGE_NAMESPACE` lets you point at a different GHCR namespace if you publish your own fork.
 
 Default bootstrap login:
 
@@ -64,22 +69,29 @@ If `RACKPATCH_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable 
 ## Common refresh commands
 
 ```bash
-docker compose up -d --build --remove-orphans
-docker compose up -d --build web
-docker compose up -d --build api worker telegram
+docker compose pull
+docker compose up -d --remove-orphans
+docker compose up -d web
+docker compose up -d api worker telegram
 docker compose logs -f api worker web telegram
 ```
 
-If you change `.env`, rerun `docker compose up -d --build --remove-orphans` so containers are recreated with the new environment.
+If you change `.env`, rerun `docker compose up -d --remove-orphans` so containers are recreated with the new environment.
 
 The control-plane stack no longer mounts host SSH material into the containers. The intended path is agent-first Docker maintenance, with optional host-maintenance helper enablement for package work.
+
+For local source builds while developing on the repo:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --remove-orphans
+```
 
 ## Site overlays
 
 Tracked defaults use the example overlay:
 
 - `RACKPATCH_SITE_NAME=example`
-- `RACKPATCH_SITE_ROOT=/workspace/sites/example`
+- `RACKPATCH_SITE_ROOT=/opt/rackpatch/sites/example`
 
 To create a private overlay:
 
@@ -91,7 +103,7 @@ Then point `.env` at it:
 
 ```dotenv
 RACKPATCH_SITE_NAME=local
-RACKPATCH_SITE_ROOT=/workspace/sites/local
+RACKPATCH_SITE_ROOT=/opt/rackpatch/sites/local
 ```
 
 Any `sites/*` overlay except `sites/example` is ignored by both git and the Docker build context.
@@ -122,7 +134,7 @@ Notes:
 After changing public repo settings, rebuild the services that expose generated commands:
 
 ```bash
-docker compose up -d --build api web telegram
+docker compose up -d api web telegram
 ```
 
 ## Agent install and update flows
@@ -138,15 +150,15 @@ The `Settings` page exposes exact generated commands for agent install and updat
 
 Agent packaging modes:
 
-- `compose`: installs under the configured agent compose directory and runs with `docker compose`
-- `container`: installs under `/opt/rackpatch-agent` and runs a compose-managed `rackpatch-agent:local`
+- `compose`: installs under the configured agent compose directory and pulls `ghcr.io/.../rackpatch-agent:<tag>`
+- `container`: installs under `/opt/rackpatch-agent` and runs a compose-managed published `rackpatch-agent` image
 - `systemd`: installs under `/opt/rackpatch-agent` and runs `rackpatch-agent.service`
 
-Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeploying, so agent code changes are not skipped during updates.
+Compose and container agent updates now pull the configured published tag by default. Existing source-built compose or container agent installs can still update in place, but fresh installs no longer need a local Docker build step.
 
 Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host maintenance, run the dedicated helper enable script after the agent is installed and choose the preset or action list you want that node to expose.
 
-If the rackpatch control-plane host is also an inventory host, the main stack can run an optional self-agent with `docker compose --profile self-agent up -d --build agent`. Set `RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN` and `RACKPATCH_SELF_AGENT_NAME` in `.env` so that self-agent enrolls as the matching inventory host, for example `core-vm`.
+If the rackpatch control-plane host is also an inventory host, the main stack can run an optional self-agent with `docker compose --profile self-agent up -d agent`. Set `RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN` and `RACKPATCH_SELF_AGENT_NAME` in `.env` so that self-agent enrolls as the matching inventory host, for example `core-vm`.
 
 The web UI treats package check and package patch as helper-gated actions. Hosts without the limited host-maintenance helper stay visible, but their package actions and package-job picker entries are greyed out until that access is enabled.
 Package maintenance no longer falls back to the legacy worker or SSH path. Multi-host package requests fan out into one helper-backed agent job per eligible host.
@@ -156,42 +168,41 @@ Docker updates no longer fall back to the legacy worker path either. Live update
 Example container install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.4/scripts/install-agent.sh | bash -s -- \
   --server-url http://YOUR-RACKPATCH-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
-  --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref main
+  --image ghcr.io/schmidtcode/rackpatch-agent:0.3.4
 ```
 
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.2/scripts/update-rackpatch.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.4/scripts/update-rackpatch.sh | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.2
+  --ref v0.3.4
 ```
 
 Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.4/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode compose \
   --preset packages \
   --compose-dir /srv/compose/rackpatch-agent \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref main
+  --install-ref v0.3.4
 ```
 
 Example host-maintenance enablement for Proxmox nodes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.4/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode systemd \
   --preset proxmox \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref main
+  --install-ref v0.3.4
 ```
 
 If you want a custom mix, pass `--allow-actions package_check,package_patch,proxmox_patch,proxmox_reboot` with only the actions you want that node to advertise.
@@ -271,12 +282,12 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 
 ## GitHub Actions and GHCR
 
-Phase 1 keeps the current source-build deployment model intact. The tracked `docker-compose.yml` stays in the repo and continues to be the canonical stack definition for local builds and current installs.
+GitHub automation now builds and publishes the three custom images, and the tracked `docker-compose.yml` now uses those published images by default. The tracked `docker-compose.dev.yml` is the source-build override for local development.
 
 GitHub automation now has two jobs under `.github/workflows/`:
 
 - `ci.yml`: runs `make validate` and verifies that the three custom images build on pull requests and pushes to `main`
-- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.3`
+- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.4`
 
 Published image names:
 
@@ -290,13 +301,13 @@ Suggested first publish flow:
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.3 -m "v0.3.3"
-git push origin v0.3.3
+git tag -a v0.3.4 -m "v0.3.4"
+git push origin refs/tags/v0.3.4
 ```
 
-After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR. Phase 1 does not switch the live stack over to those published images yet; it only creates the release pipeline.
+After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR.
 
-## Release flow for v0.3.2
+## Release flow for v0.3.4
 
 If `origin` is already configured, confirm it first:
 
@@ -308,18 +319,18 @@ Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.3.2
-git push -u origin release/v0.3.2
+git switch -c release/v0.3.4
+git push -u origin release/v0.3.4
 ```
 
-Open a pull request from `release/v0.3.2` into `main`. After the PR merges:
+Open a pull request from `release/v0.3.4` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.2 -m "v0.3.2"
-git push origin v0.3.2
+git tag -a v0.3.4 -m "v0.3.4"
+git push origin refs/tags/v0.3.4
 ```
 
 Suggested GitHub release notes:
@@ -329,18 +340,19 @@ Suggested GitHub release notes:
 - Backend-generated install/update commands and job-kind metadata.
 - Machine-readable control-plane context for AI operators.
 - GitHub release tracking for the stack and enrolled agents.
+- GHCR-backed default deployments plus a tracked `docker-compose.dev.yml` for local source builds.
 - Safer public GitHub publishing with `make release-check`.
 
 ## Helpful commands
 
 ```bash
 make up
+make dev-up
 make logs
 make worker-logs
 make validate
 make release-check
 make rollback STACK=dashboard
-make backup-legacy
 ```
 
 ## Repository layout

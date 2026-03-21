@@ -1,5 +1,5 @@
 compose_root: /srv/compose
-rackpatch_root: /workspace
+rackpatch_root: /opt/rackpatch
 state_root: /data
 backup_root: /data/backups
 rollback_root: /data/rollbacks
