@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
-Version in this repo: `v0.3.2`
+Version in this repo: `v0.3.3`
 
 ## What rackpatch does
 
@@ -13,7 +13,7 @@ Version in this repo: `v0.3.2`
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
-## v0.3.2 highlights
+## v0.3.3 highlights
 
 - Page-based UI with focused `Overview`, `Stacks`, `Hosts`, `Agents`, `Jobs`, `Approvals`, `Schedules`, `Backups`, and `Settings` views.
 - Mobile-friendly navigation, tables, and install/update previews.
@@ -167,10 +167,10 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.2/scripts/update-rackpatch.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.3/scripts/update-rackpatch.sh | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.2
+  --ref v0.3.3
 ```
 
 Example host-maintenance enablement for guest and Docker-host package actions:
@@ -296,7 +296,7 @@ git push origin v0.3.3
 
 After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR. Phase 1 does not switch the live stack over to those published images yet; it only creates the release pipeline.
 
-## Release flow for v0.3.2
+## Release flow for v0.3.3
 
 If `origin` is already configured, confirm it first:
 
@@ -308,18 +308,18 @@ Push the release branch:
 
 ```bash
 git fetch origin
-git switch -c release/v0.3.2
-git push -u origin release/v0.3.2
+git switch -c release/v0.3.3
+git push -u origin release/v0.3.3
 ```
 
-Open a pull request from `release/v0.3.2` into `main`. After the PR merges:
+Open a pull request from `release/v0.3.3` into `main`. After the PR merges:
 
 ```bash
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.2 -m "v0.3.2"
-git push origin v0.3.2
+git tag -a v0.3.3 -m "v0.3.3"
+git push origin v0.3.3
 ```
 
 Suggested GitHub release notes:

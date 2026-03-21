@@ -32,6 +32,9 @@ jobs:
       - name: Run repository validation
         run: make validate
 
+      - name: Run release safety check
+        run: make release-check
+
   docker-build:
     runs-on: ubuntu-latest
     strategy:
