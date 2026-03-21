@@ -8,13 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-RACKPATCH_ROOT = Path("/workspace")
+RACKPATCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 
 from common import stack_catalog  # noqa: E402
 
 
-INVENTORY_FILE = Path(os.environ.get("RACKPATCH_INVENTORY_FILE", RACKPATCH_ROOT / "inventory" / "hosts.yml"))
+INVENTORY_FILE = Path(
+    os.environ.get("RACKPATCH_INVENTORY_FILE", RACKPATCH_ROOT / "sites" / "example" / "inventory" / "hosts.yml")
+)
 ROLLBACK_ROOT = Path(os.environ.get("RACKPATCH_ROLLBACK_ROOT", "/data/rollbacks"))
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1"}
 
@@ -47,7 +49,7 @@ def short_image_id(value: str | None) -> str:
 
 
 def local_compose_command(stack: dict, *args: str) -> list[str]:
-    command = ["/workspace/scripts/compose-wrapper.sh"]
+    command = [str(RACKPATCH_ROOT / "scripts" / "compose-wrapper.sh")]
     for env_file in stack.get("compose_env_files", []):
         command.extend(["--env-file", env_file])
     command.extend(args)

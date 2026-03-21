@@ -15,21 +15,22 @@ def runtime_env() -> dict[str, str]:
     env.update(
         {
             "PYTHONUNBUFFERED": "1",
-            "ANSIBLE_CONFIG": "/workspace/ansible.cfg",
+            "ANSIBLE_CONFIG": str(config.resolve_runtime_path(config.ANSIBLE_CONFIG_PATH)),
             "RACKPATCH_SITE_ROOT": str(site.site_root()),
             "RACKPATCH_STACKS_FILE": str(site.stacks_path()),
             "RACKPATCH_INVENTORY_FILE": str(site.inventory_path()),
             "RACKPATCH_ROLLBACK_ROOT": str(group_vars.get("rollback_root", "/data/rollbacks")),
+            "RACKPATCH_RUNTIME_ROOT": str(config.RUNTIME_ROOT),
         }
     )
     return env
 
 
-def run_logged(job_id: str, command: list[str], cwd: str = "/workspace") -> dict[str, Any]:
+def run_logged(job_id: str, command: list[str], cwd: str | None = None) -> dict[str, Any]:
     jobs.append_event(job_id, f"RUN {' '.join(command)}")
     process = subprocess.Popen(
         command,
-        cwd=cwd,
+        cwd=cwd or str(config.RUNTIME_ROOT),
         env=runtime_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -63,7 +64,7 @@ def artifacts_from_output(output: str) -> list[dict[str, str]]:
 
 
 def summarize_docker_update(payload: dict[str, Any], target_ref: str) -> dict[str, Any]:
-    command = ["python3", "scripts/summarize_docker_update.py"]
+    command = ["python3", str(config.SCRIPTS_ROOT / "summarize_docker_update.py")]
     selected_stacks = list(payload.get("selected_stacks") or [])
     if selected_stacks:
         for stack_name in selected_stacks:
@@ -73,7 +74,7 @@ def summarize_docker_update(payload: dict[str, Any], target_ref: str) -> dict[st
 
     result = subprocess.run(
         command,
-        cwd="/workspace",
+        cwd=str(config.RUNTIME_ROOT),
         env=runtime_env(),
         capture_output=True,
         text=True,
@@ -95,7 +96,7 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
         output_name = payload.get("output_name", f"{volume}.tgz")
         return [
             "python3",
-            "scripts/backup_named_volume.py",
+            str(config.SCRIPTS_ROOT / "backup_named_volume.py"),
             "--volume",
             volume,
             "--backup-root",
@@ -106,7 +107,7 @@ def worker_command(kind: str, payload: dict[str, Any], target_ref: str) -> list[
     if kind == "rollback":
         return [
             "python3",
-            "scripts/rollback_stack.py",
+            str(config.SCRIPTS_ROOT / "rollback_stack.py"),
             "--stack",
             target_ref,
         ]

@@ -1,14 +1,22 @@
 SHELL := /bin/bash
 DC := docker compose
+DEV_DC := docker compose -f docker-compose.yml -f docker-compose.dev.yml
 EXEC := $(DC) exec -T api
 
-.PHONY: up build logs shell worker-logs rollback validate release-check check-updates check-packages agent-install
+.PHONY: up dev-up build dev-build logs shell worker-logs rollback validate release-check check-updates check-packages agent-install
 
 up:
-	$(DC) up -d --build --remove-orphans
+	$(DC) pull
+	$(DC) up -d --remove-orphans
+
+dev-up:
+	$(DEV_DC) up -d --build --remove-orphans
 
 build:
-	$(DC) build
+	$(DC) pull
+
+dev-build:
+	$(DEV_DC) build
 
 logs:
 	$(DC) logs -f api

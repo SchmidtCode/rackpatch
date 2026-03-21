@@ -19,12 +19,10 @@ services:
       retries: 10
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-api
     restart: unless-stopped
-    working_dir: /workspace
+    working_dir: /opt/rackpatch
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +38,7 @@ services:
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
       RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/opt/rackpatch/sites/example}
       RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
       RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
       RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
@@ -54,11 +52,11 @@ services:
       RACKPATCH_CORS_ORIGINS: ${RACKPATCH_CORS_ORIGINS:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
-      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      ANSIBLE_CONFIG: /opt/rackpatch/ansible.cfg
       TZ: ${TZ:-America/New_York}
     volumes:
-      - .:/workspace
       - ./data:/data
+      - ./sites:/opt/rackpatch/sites:ro
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
@@ -70,12 +68,10 @@ services:
       retries: 5
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-worker
     restart: unless-stopped
-    working_dir: /workspace
+    working_dir: /opt/rackpatch
     depends_on:
       db:
         condition: service_healthy
@@ -89,7 +85,7 @@ services:
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
       RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/opt/rackpatch/sites/example}
       RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
       RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
       RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
@@ -102,19 +98,17 @@ services:
       RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
-      ANSIBLE_CONFIG: /workspace/ansible.cfg
+      ANSIBLE_CONFIG: /opt/rackpatch/ansible.cfg
       TZ: ${TZ:-America/New_York}
     volumes:
-      - .:/workspace
       - ./data:/data
+      - ./sites:/opt/rackpatch/sites:ro
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
 
   agent:
     profiles: ["self-agent"]
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch-agent:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-self-agent
     restart: unless-stopped
     depends_on:
@@ -136,9 +130,7 @@ services:
       - /run/rackpatch-host-helper:/run/rackpatch-host-helper
 
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch-web:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-web
     restart: unless-stopped
     depends_on:
@@ -153,9 +145,7 @@ services:
       retries: 5
 
   telegram:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-telegram
     restart: unless-stopped
     depends_on:
@@ -167,7 +157,7 @@ services:
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
       RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/opt/rackpatch/sites/example}
       RACKPATCH_ADMIN_USERNAME: ${RACKPATCH_ADMIN_USERNAME:-admin}
       RACKPATCH_ADMIN_PASSWORD: ${RACKPATCH_ADMIN_PASSWORD:-change-me}
       RACKPATCH_AUTH_SECRET: ${RACKPATCH_AUTH_SECRET:-change-me}
@@ -175,13 +165,11 @@ services:
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       TZ: ${TZ:-America/New_York}
     volumes:
-      - .:/workspace
       - ./data:/data
+      - ./sites:/opt/rackpatch/sites:ro
 
   notify:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch:${RACKPATCH_VERSION:-latest}
     container_name: rackpatch-notify
     restart: unless-stopped
     profiles: ["notify"]

@@ -319,12 +319,18 @@ EOF
 
 restart_compose_agent() {
   local target_dir="$1"
-  local build_flag="$2"
   local -a files=(-f "${target_dir}/compose.yml")
+  if [[ -f "${target_dir}/agent.env" ]]; then
+    files=(--env-file "${target_dir}/agent.env" "${files[@]}")
+  fi
   if [[ -f "${target_dir}/compose.host-maintenance.yml" ]]; then
     files+=(-f "${target_dir}/compose.host-maintenance.yml")
   fi
-  docker compose "${files[@]}" up -d ${build_flag}
+  if grep -q '^[[:space:]]*build:' "${target_dir}/compose.yml"; then
+    docker compose "${files[@]}" up -d --build
+  else
+    docker compose "${files[@]}" up -d
+  fi
 }
 
 configure_systemd_agent() {
@@ -354,11 +360,11 @@ restart_helper_service
 case "${mode}" in
   compose)
     write_compose_override "${compose_dir}"
-    restart_compose_agent "${compose_dir}" "--build"
+    restart_compose_agent "${compose_dir}"
     ;;
   container)
     write_compose_override "${install_dir}"
-    restart_compose_agent "${install_dir}" ""
+    restart_compose_agent "${install_dir}"
     ;;
   systemd)
     configure_systemd_agent

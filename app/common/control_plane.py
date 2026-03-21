@@ -16,17 +16,16 @@ def _curl_command(url: str, *extra: str) -> str:
     return " ".join(_shell_quote(part) for part in parts)
 
 
+def _agent_image_for_ref(public_settings: dict[str, Any], repo_ref: str) -> str:
+    return config.derive_public_image_ref(
+        str(public_settings.get("repo_url") or config.PUBLIC_REPO_URL),
+        repo_ref,
+        "rackpatch-agent",
+    )
+
+
 def build_agent_install_commands(public_settings: dict[str, Any], token: str) -> dict[str, str]:
-    common_args = [
-        "--server-url",
-        public_settings["base_url"],
-        "--bootstrap-token",
-        token,
-        "--install-source",
-        public_settings["repo_url"],
-        "--install-ref",
-        public_settings["repo_ref"],
-    ]
+    repo_ref = str(public_settings.get("repo_ref") or config.PUBLIC_REPO_REF)
     script_prefix = [
         "curl",
         "-fsSL",
@@ -36,14 +35,41 @@ def build_agent_install_commands(public_settings: dict[str, Any], token: str) ->
         "-s",
         "--",
     ]
-    container = script_prefix + common_args + ["--mode", "container"]
-    compose = script_prefix + common_args + [
+    image = _agent_image_for_ref(public_settings, repo_ref)
+    compose = script_prefix + [
+        "--server-url",
+        public_settings["base_url"],
+        "--bootstrap-token",
+        token,
         "--mode",
         "compose",
         "--compose-dir",
         public_settings["agent_compose_dir"],
+        "--image",
+        image,
     ]
-    systemd = script_prefix + common_args + ["--mode", "systemd"]
+    container = script_prefix + [
+        "--server-url",
+        public_settings["base_url"],
+        "--bootstrap-token",
+        token,
+        "--mode",
+        "container",
+        "--image",
+        image,
+    ]
+    systemd = script_prefix + [
+        "--server-url",
+        public_settings["base_url"],
+        "--bootstrap-token",
+        token,
+        "--mode",
+        "systemd",
+        "--install-source",
+        public_settings["repo_url"],
+        "--install-ref",
+        repo_ref,
+    ]
     return {
         "compose": " ".join(_shell_quote(part) if part != "|" else part for part in compose),
         "container": " ".join(_shell_quote(part) if part != "|" else part for part in container),
@@ -145,8 +171,17 @@ def build_agent_update_command(
         return "# Configure a GitHub repo URL to generate rackpatch agent update commands."
     extra: list[str] = []
     if mode == "compose":
-        extra = ["--compose-dir", compose_dir or public_settings["agent_compose_dir"]]
-    elif mode in {"container", "systemd"} and install_dir:
+        extra = [
+            "--compose-dir",
+            compose_dir or public_settings["agent_compose_dir"],
+            "--image",
+            _agent_image_for_ref(public_settings, ref),
+        ]
+    elif mode == "container":
+        extra = ["--image", _agent_image_for_ref(public_settings, ref)]
+        if install_dir:
+            extra.extend(["--install-dir", install_dir])
+    elif mode == "systemd" and install_dir:
         extra = ["--install-dir", install_dir]
     command = [
         "curl",
@@ -158,12 +193,17 @@ def build_agent_update_command(
         "--",
         "--mode",
         mode,
-        "--install-source",
-        public_settings["repo_url"],
-        "--install-ref",
-        ref,
         *extra,
     ]
+    if mode == "systemd":
+        command.extend(
+            [
+                "--install-source",
+                public_settings["repo_url"],
+                "--install-ref",
+                ref,
+            ]
+        )
     return " ".join(_shell_quote(part) if part != "|" else part for part in command)
 
 
