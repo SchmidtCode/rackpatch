@@ -28,6 +28,7 @@ if config.CORS_ORIGINS:
 def on_startup() -> None:
     db.init_db()
     jobs.retire_legacy_package_jobs()
+    jobs.retire_legacy_worker_control_jobs()
 
 
 def _json_body(value: Any) -> dict[str, Any]:
@@ -97,8 +98,8 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
             "detail": "Rackpatch control plane host. Agent optional.",
         }
     return {
-        "status": "Worker-routed",
-        "detail": "No agent enrolled. UI package jobs need the host maintenance helper. Worker and inventory jobs still available for other workflows.",
+        "status": "No agent",
+        "detail": "No agent enrolled. Docker updates require an enrolled Docker-capable agent, and package jobs require the limited host-maintenance helper.",
     }
 
 

@@ -164,9 +164,7 @@ def job_message(job: dict[str, Any], event: str, result: dict[str, Any] | None =
     if result.get("error"):
         lines.append(f"error={result['error']}")
 
-    if job.get("kind") == "docker_discover":
-        lines.extend(_docker_summary(result))
-    elif job.get("kind") == "package_check":
+    if job.get("kind") == "package_check":
         lines.extend(_package_summary(result))
 
     artifact_lines = _artifact_lines(result)

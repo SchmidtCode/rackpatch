@@ -144,18 +144,6 @@ def default_schedules() -> list[dict[str, Any]]:
     stack_names = [stack["name"] for stack in load_defined_stacks() if stack.get("name")]
     return [
         {
-            "name": "Docker Image Discovery",
-            "kind": "docker_discover",
-            "cron_expr": windows.get("docker_discovery", windows.get("discovery", "0 5 * * *")),
-            "payload": {
-                "executor": "worker",
-                "window": "all",
-                "requires_approval": False,
-                "notify": True,
-                "notify_on": ["completed", "failed"],
-            },
-        },
-        {
             "name": "Host Package Check",
             "kind": "package_check",
             "cron_expr": windows.get("host_package_check", "15 5 * * *"),
@@ -185,22 +173,9 @@ def default_schedules() -> list[dict[str, Any]]:
             "kind": "docker_update",
             "cron_expr": windows.get("docker_update_approval", windows.get("docker_auto", "30 5 * * 6")),
             "payload": {
-                "executor": "worker",
+                "executor": "agent",
                 "target_ref": "full-stack-catalog",
                 "selected_stacks": stack_names,
-                "dry_run": False,
-                "requires_approval": True,
-                "notify": True,
-            },
-        },
-        {
-            "name": "Proxmox Node Patch Approval",
-            "kind": "proxmox_patch",
-            "cron_expr": windows.get("proxmox_patch_approval", windows.get("proxmox_nodes", "30 4 * * 0")),
-            "payload": {
-                "executor": "worker",
-                "target_ref": "proxmox_nodes",
-                "limit": "proxmox_nodes",
                 "dry_run": False,
                 "requires_approval": True,
                 "notify": True,

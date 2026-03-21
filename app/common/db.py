@@ -9,7 +9,7 @@ from typing import Iterator
 import psycopg
 from psycopg.rows import dict_row
 
-from common import auth, config, site
+from common import auth, config, job_catalog, site
 
 
 SCHEMA = """
@@ -218,6 +218,11 @@ def init_db() -> None:
                                 row["id"],
                             ),
                         )
+                valid_schedule_kinds = list(job_catalog.known_job_kinds())
+                cur.execute(
+                    "DELETE FROM schedules WHERE NOT (kind = ANY(%s))",
+                    (valid_schedule_kinds,),
+                )
             finally:
                 cur.execute("SELECT pg_advisory_unlock(84720113)")
 

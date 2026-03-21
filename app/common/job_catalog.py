@@ -6,45 +6,13 @@ from typing import Any
 
 JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "kind": "docker_discover",
-        "label": "Docker discover",
-        "mode": "stack_multi",
-        "target_type": "stack",
-        "summary": "Select one or more stacks to inspect. Leave all selected to discover everything.",
-        "defaults": {
-            "executor": "worker",
-            "window": "all",
-            "requires_approval": False,
-        },
-        "default_select_all": True,
-        "fields": [
-            {
-                "name": "window",
-                "type": "select",
-                "label": "Discovery Window",
-                "hint": "Choose whether to inspect every stack or only the configured maintenance windows.",
-                "options": [
-                    {"value": "all", "label": "All stacks"},
-                    {"value": "approve", "label": "Approved window"},
-                    {"value": "auto-windowed", "label": "Low-risk window"},
-                ],
-            },
-            {
-                "name": "requires_approval",
-                "type": "toggle",
-                "label": "Require approval",
-                "hint": "Pause this discovery job for approval before it is queued.",
-            },
-        ],
-    },
-    {
         "kind": "docker_update",
         "label": "Docker update",
         "mode": "stack_multi",
         "target_type": "stack",
-        "summary": "Select one or more stacks to update. Leave all selected to run across everything.",
+        "summary": "Select one or more stacks to update through enrolled Docker-capable agents.",
         "defaults": {
-            "executor": "auto",
+            "executor": "agent",
             "window": "all",
             "dry_run": True,
             "requires_approval": False,
@@ -55,7 +23,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
                 "name": "dry_run",
                 "type": "toggle",
                 "label": "Dry run",
-                "hint": "Preview the Docker update without pulling images or restarting services.",
+                "hint": "Validate compose configuration on the target agent without pulling images or restarting services.",
             },
             {
                 "name": "requires_approval",
@@ -120,96 +88,6 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         ],
     },
     {
-        "kind": "snapshot",
-        "label": "Snapshot guest",
-        "mode": "host_multi",
-        "target_type": "host",
-        "summary": "Choose one or more guest hosts to snapshot.",
-        "defaults": {
-            "executor": "worker",
-            "requires_approval": False,
-        },
-        "host_groups_exclude": ["proxmox_nodes"],
-        "fields": [
-            {
-                "name": "dry_run",
-                "type": "toggle",
-                "label": "Dry run",
-                "hint": "Validate snapshot targets without creating a snapshot.",
-            },
-            {
-                "name": "requires_approval",
-                "type": "toggle",
-                "label": "Require approval",
-                "hint": "Pause the snapshot request for approval first.",
-            },
-        ],
-    },
-    {
-        "kind": "proxmox_patch",
-        "label": "Proxmox patch",
-        "mode": "host_multi",
-        "target_type": "host",
-        "summary": "Choose one or more Proxmox nodes to patch.",
-        "defaults": {
-            "executor": "worker",
-            "dry_run": True,
-            "requires_approval": False,
-        },
-        "host_groups_include": ["proxmox_nodes"],
-        "fields": [
-            {
-                "name": "dry_run",
-                "type": "toggle",
-                "label": "Dry run",
-                "hint": "Preview package changes on the selected Proxmox nodes.",
-            },
-            {
-                "name": "requires_approval",
-                "type": "toggle",
-                "label": "Require approval",
-                "hint": "Queue the node patching job behind an approval step.",
-            },
-        ],
-    },
-    {
-        "kind": "proxmox_reboot",
-        "label": "Proxmox reboot",
-        "mode": "host_multi",
-        "target_type": "host",
-        "summary": "Choose one or more Proxmox nodes to reboot.",
-        "defaults": {
-            "executor": "worker",
-            "dry_run": True,
-            "requires_approval": False,
-        },
-        "host_groups_include": ["proxmox_nodes"],
-        "fields": [
-            {
-                "name": "dry_run",
-                "type": "toggle",
-                "label": "Dry run",
-                "hint": "Show the reboot plan without scheduling the reboot.",
-            },
-            {
-                "name": "requires_approval",
-                "type": "toggle",
-                "label": "Require approval",
-                "hint": "Pause this reboot job until it is approved.",
-            },
-            {
-                "name": "reboot_mode",
-                "type": "select",
-                "label": "Reboot mode",
-                "hint": "Soft reboot tries the guest shutdown order first. Hard reboot restarts the node directly.",
-                "options": [
-                    {"value": "soft", "label": "Soft reboot"},
-                    {"value": "hard", "label": "Hard reboot"},
-                ],
-            },
-        ],
-    },
-    {
         "kind": "backup",
         "label": "Backup",
         "mode": "manual",
@@ -242,7 +120,7 @@ JOB_KIND_DEFINITIONS: list[dict[str, Any]] = [
         "label": "Rollback stack",
         "mode": "stack_single",
         "target_type": "stack",
-        "summary": "Select exactly one stack to roll back.",
+        "summary": "Select exactly one stack to roll back from the control-plane host.",
         "defaults": {
             "executor": "worker",
             "requires_approval": True,

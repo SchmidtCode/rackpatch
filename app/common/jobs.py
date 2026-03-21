@@ -10,13 +10,21 @@ from common import config, db, job_catalog, notify, site
 
 
 PACKAGE_JOB_KINDS = {"package_check", "package_patch"}
-AGENT_JOB_KINDS = PACKAGE_JOB_KINDS
-APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
+AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | {"docker_update"}
+APPROVAL_REQUIRED = {"docker_update", "package_patch", "rollback"}
 VALID_EXECUTORS = {"worker", "agent", "auto"}
 CANCELLABLE_STATUSES = {"queued", "pending_approval"}
-PACKAGE_JOB_CAPABILITIES = {
+AGENT_JOB_CAPABILITIES = {
     "package_check": {"host-package-check"},
     "package_patch": {"host-package-patch"},
+    "docker_update": {"docker"},
+}
+RETIRED_WORKER_CONTROL_JOB_KINDS = {
+    "docker_discover",
+    "docker_update",
+    "snapshot",
+    "proxmox_patch",
+    "proxmox_reboot",
 }
 
 
@@ -159,6 +167,23 @@ def _resolve_package_targets(kind: str, target_ref: str, payload: dict[str, Any]
     return selected
 
 
+def _resolve_docker_update_targets(target_ref: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    requested = _dedupe(_split_targets(payload.get("selected_stacks")))
+    stacks = site.load_stacks()
+
+    if not requested and target_ref not in {"", "all", "full-stack-catalog"}:
+        requested = _dedupe(_split_targets(target_ref))
+
+    if requested:
+        index = {str(stack.get("name")): stack for stack in stacks if str(stack.get("name") or "").strip()}
+        return [index[name] for name in requested if name in index]
+
+    window = str(payload.get("window") or "all").strip() or "all"
+    if window == "all":
+        return stacks
+    return [stack for stack in stacks if str(stack.get("update_mode") or "") == window]
+
+
 def _current_maintenance_hour() -> int:
     timezone_name = str(site.load_group_vars().get("maintenance_timezone") or "UTC")
     try:
@@ -173,7 +198,7 @@ def _package_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) ->
     if not host:
         return f"{target_ref} is not present in inventory."
     if str(host.get("group")) == "proxmox_nodes":
-        return "Use the Proxmox patch or reboot jobs for Proxmox nodes."
+        return "Package helper jobs are not available for proxmox_nodes in the agent-first runtime."
     if kind != "package_patch":
         return None
     allow_manual = bool(payload.get("allow_manual_guests", False))
@@ -188,16 +213,47 @@ def _package_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) ->
     return None
 
 
-def _agent_capability_error(kind: str, target_ref: str, payload: dict[str, Any], agent_id: str | None) -> str | None:
-    if kind not in PACKAGE_JOB_KINDS:
+def _docker_update_blocker(target_ref: str, payload: dict[str, Any]) -> str | None:
+    stack = site.find_stack(target_ref)
+    if not stack:
+        return f"{target_ref} is not present in the stack catalog."
+
+    project_dir = str(stack.get("path") or stack.get("project_dir") or "").strip()
+    if not project_dir:
+        return f"{target_ref} is missing path or project_dir."
+
+    if bool(payload.get("dry_run", False)):
         return None
-    blocker = _package_job_blocker(kind, target_ref, payload)
+    if bool(stack.get("snapshot_before")):
+        return "This stack requires snapshot_before, which is not available through the agent-only Docker update path."
+    if bool(stack.get("backup_before")):
+        return "This stack requires backup_before, which is not available through the agent-only Docker update path."
+    return None
+
+
+def _rollback_blocker(target_ref: str) -> str | None:
+    stack = site.find_stack(target_ref)
+    if not stack:
+        return f"{target_ref} is not present in the stack catalog."
+    host_name = str(stack.get("host") or "localhost").strip()
+    if host_name in {"", "localhost", "127.0.0.1"}:
+        return None
+    host = _site_host(host_name)
+    if host and (bool(host.get("rackpatch_control_plane")) or bool(host.get("control_plane"))):
+        return None
+    return "Remote rollback is not supported in the agent-first runtime."
+
+
+def _agent_capability_error(kind: str, target_ref: str, payload: dict[str, Any], agent_id: str | None) -> str | None:
+    if kind not in AGENT_JOB_KINDS:
+        return None
+    blocker = _package_job_blocker(kind, target_ref, payload) if kind in PACKAGE_JOB_KINDS else _docker_update_blocker(target_ref, payload)
     if blocker:
         return blocker
     if not agent_id:
         return f"No enrolled agent found for {target_ref}."
     capabilities = _agent_capabilities(agent_id)
-    required = PACKAGE_JOB_CAPABILITIES.get(kind, set())
+    required = AGENT_JOB_CAPABILITIES.get(kind, set())
     if required.issubset(capabilities):
         return None
     capability_label = ", ".join(sorted(required))
@@ -221,7 +277,7 @@ def host_job_access(kind: str, target_ref: str, payload: dict[str, Any] | None =
     return {
         "eligible": error is None,
         "reason": "" if error is None else error,
-        "required_capabilities": sorted(PACKAGE_JOB_CAPABILITIES.get(kind, set())),
+        "required_capabilities": sorted(AGENT_JOB_CAPABILITIES.get(kind, set())),
         "target_agent_id": agent_id,
     }
 
@@ -363,6 +419,70 @@ def _create_package_jobs(
     return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
 
 
+def _create_docker_update_jobs(
+    kind: str,
+    target_type: str,
+    target_ref: str,
+    payload: dict[str, Any],
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    executor = str(payload.get("executor", "agent")).strip() or "agent"
+    if executor == "worker":
+        raise ValueError("docker_update no longer supports the worker executor; use an enrolled Docker-capable agent")
+    if executor not in VALID_EXECUTORS:
+        allowed = ", ".join(sorted(VALID_EXECUTORS))
+        raise ValueError(f"invalid executor {executor!r}; expected one of: {allowed}")
+
+    targets = _resolve_docker_update_targets(target_ref, payload)
+    if not targets:
+        raise ValueError("no stacks were selected for docker_update")
+
+    requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
+    status = "pending_approval" if requires_approval else "queued"
+    approval_status = "pending" if requires_approval else "not_required"
+    queued_jobs: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for stack in targets:
+        stack_name = str(stack.get("name") or "").strip()
+        if not stack_name:
+            continue
+        child_payload = deepcopy(payload)
+        child_payload.pop("target_agent_id", None)
+        child_payload["selected_stacks"] = [stack_name]
+        child_payload["project_dir"] = str(stack.get("path") or stack.get("project_dir") or "")
+        child_payload["compose_env_files"] = list(stack.get("compose_env_files") or [])
+        child_payload["host"] = str(stack.get("host") or "")
+        agent_id = resolve_agent_id(target_type, stack_name, child_payload)
+        error = _agent_capability_error(kind, stack_name, child_payload, agent_id)
+        if error:
+            skipped.append({"target_ref": stack_name, "reason": error})
+            continue
+        queued_jobs.append(
+            _insert_job(
+                kind=kind,
+                status=status,
+                source=source,
+                target_type=target_type,
+                target_ref=stack_name,
+                executor="agent",
+                payload=child_payload,
+                requested_by=requested_by,
+                requires_approval=requires_approval,
+                approval_status=approval_status,
+                target_agent_id=agent_id,
+            )
+        )
+
+    if not queued_jobs:
+        reasons = "; ".join(f"{item['target_ref']}: {item['reason']}" for item in skipped[:4])
+        raise ValueError(reasons or "no stacks were eligible for docker_update")
+    if len(queued_jobs) == 1 and not skipped:
+        return queued_jobs[0]
+    return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
+
+
 def create_job(
     kind: str,
     target_type: str,
@@ -379,6 +499,12 @@ def create_job(
         raise ValueError(f"{kind} jobs must target {expected_target_type}, not {target_type}")
     if kind in PACKAGE_JOB_KINDS:
         return _create_package_jobs(kind, target_type, target_ref, payload, requested_by, source)
+    if kind == "docker_update":
+        return _create_docker_update_jobs(kind, target_type, target_ref, payload, requested_by, source)
+    if kind == "rollback":
+        blocker = _rollback_blocker(target_ref)
+        if blocker:
+            raise ValueError(blocker)
 
     requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
     executor = str(payload.get("executor", "worker")).strip() or "worker"
@@ -520,6 +646,44 @@ def retire_legacy_package_jobs() -> list[dict[str, Any]]:
         append_event(
             str(job["id"]),
             f"[{now_iso()}] worker package path retired; requeue with a helper-enabled agent",
+            stream="stderr",
+        )
+    return retired
+
+
+def retire_legacy_worker_control_jobs() -> list[dict[str, Any]]:
+    retirement_result = {
+        "error": "legacy worker host-control path removed",
+        "recovered_by": "agent_first_runtime",
+        "recovered_at": now_iso(),
+    }
+    with db.db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs
+            SET status = 'failed',
+                approval_status = CASE
+                    WHEN approval_status = 'pending' THEN 'cancelled'
+                    ELSE approval_status
+                END,
+                result = COALESCE(result, '{}'::jsonb) || %s::jsonb,
+                finished_at = NOW()
+            WHERE kind = ANY(%s)
+              AND executor = 'worker'
+              AND status = ANY(%s)
+            RETURNING *
+            """,
+            (
+                json.dumps(retirement_result),
+                list(RETIRED_WORKER_CONTROL_JOB_KINDS),
+                ["queued", "pending_approval", "running"],
+            ),
+        )
+        retired = list(cur.fetchall())
+    for job in retired:
+        append_event(
+            str(job["id"]),
+            f"[{now_iso()}] legacy worker host-control path retired; requeue with an enrolled agent if the workflow is still supported",
             stream="stderr",
         )
     return retired

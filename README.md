@@ -1,14 +1,14 @@
 # rackpatch
 
-rackpatch is a compose-first homelab maintenance appliance for Docker stacks, Debian and Ubuntu guests, and Proxmox workflows.
+rackpatch is a compose-first homelab maintenance appliance for Docker stacks and helper-gated Debian or Ubuntu package maintenance.
 
 Version in this repo: `v0.3.2`
 
 ## What rackpatch does
 
 - Tracks Docker stacks from your site catalog and discovered compose projects.
-- Runs image discovery, stack updates, backups, rollback capture, and rollback execution.
-- Handles guest package checks, guest patching, snapshots, and Proxmox patch/reboot workflows.
+- Uses enrolled agents to discover compose projects and apply Docker stack updates.
+- Handles guest package checks and guest patching through the limited host-maintenance helper.
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
@@ -70,6 +70,8 @@ docker compose logs -f api worker web telegram
 ```
 
 If you change `.env`, rerun `docker compose up -d --build --remove-orphans` so containers are recreated with the new environment.
+
+The control-plane stack no longer mounts host SSH material into the containers. The intended path is agent-first Docker maintenance, with optional host-maintenance helper enablement for package work.
 
 ## Site overlays
 
@@ -143,8 +145,11 @@ Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeplo
 
 Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host package maintenance, run the dedicated helper enable script after the agent is installed.
 
+If the rackpatch control-plane host is also an inventory host, the main stack can run an optional self-agent with `docker compose --profile self-agent up -d --build agent`. Set `RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN` and `RACKPATCH_SELF_AGENT_NAME` in `.env` so that self-agent enrolls as the matching inventory host, for example `core-vm`.
+
 The web UI treats package check and package patch as helper-gated actions. Hosts without the limited host-maintenance helper stay visible, but their package actions and package-job picker entries are greyed out until that access is enabled.
 Package maintenance no longer falls back to the legacy worker or SSH path. Multi-host package requests fan out into one helper-backed agent job per eligible host.
+Docker updates no longer fall back to the legacy worker path either. Live updates require an enrolled Docker-capable agent for each selected stack.
 
 Example container install:
 
@@ -186,6 +191,7 @@ The helper exposes only approved host-maintenance actions and is intended for pa
 - Privileged host maintenance is enabled only by the dedicated helper setup step.
 - The helper is limited to named maintenance actions such as package check and package patch.
 - The helper does not accept arbitrary shell, free-form commands, package names, or paths from the control plane.
+- The control-plane compose stack does not mount host SSH directories into the API or worker containers.
 - Package check and package patch in the web UI are intentionally disabled on hosts that do not advertise the matching helper-backed capability.
 - Package maintenance is agent-only now; if a host cannot satisfy helper or policy requirements, rackpatch rejects or skips that host instead of falling back to worker or SSH execution.
 - Every future privileged action must have:
@@ -228,17 +234,13 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 /jobs
 /approvals
 /approve <job-id>
-/discover <stack|all>
 /update <stack|all> [dry|live]
 /patch <host|all> [dry|live]
-/snapshot <host>
-/proxmox-patch <limit> [dry|live]
-/proxmox-reboot <limit> [dry|live]
 /backup <volume>
 /rollback <stack>
 /schedules
 /schedule <name-or-id> on|off
-/job <kind> <target_type> <target_ref> {"executor":"auto"}
+/job <kind> <target_type> <target_ref> {"executor":"agent"}
 ```
 
 ## Public repo safety
@@ -248,6 +250,33 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 - Runtime data, backups, secrets, key material, and generated state are ignored by both `.gitignore` and `.dockerignore`.
 - Run `make release-check` before pushing a public branch. It fails if tracked files include `.env`, key material, `secrets/`, or non-example site overlays.
 - Rotate any tokens or passwords from your current local `.env` before the first public push.
+
+## GitHub Actions and GHCR
+
+Phase 1 keeps the current source-build deployment model intact. The tracked `docker-compose.yml` stays in the repo and continues to be the canonical stack definition for local builds and current installs.
+
+GitHub automation now has two jobs under `.github/workflows/`:
+
+- `ci.yml`: runs `make validate` and verifies that the three custom images build on pull requests and pushes to `main`
+- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.3`
+
+Published image names:
+
+- `ghcr.io/<owner>/rackpatch`
+- `ghcr.io/<owner>/rackpatch-agent`
+- `ghcr.io/<owner>/rackpatch-web`
+
+Suggested first publish flow:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git tag -a v0.3.3 -m "v0.3.3"
+git push origin v0.3.3
+```
+
+After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR. Phase 1 does not switch the live stack over to those published images yet; it only creates the release pipeline.
 
 ## Release flow for v0.3.2
 

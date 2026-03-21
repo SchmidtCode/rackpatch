@@ -32,7 +32,7 @@ services:
       [
         "bash",
         "-lc",
-        "/usr/local/bin/prepare_ssh_dir.sh /ssh-source /root/.ssh && uvicorn api.main:app --host 0.0.0.0 --port 9080"
+        "uvicorn api.main:app --host 0.0.0.0 --port 9080"
       ]
     environment:
       RACKPATCH_API_HOST: 0.0.0.0
@@ -61,7 +61,6 @@ services:
       - ./data:/data
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${RACKPATCH_SSH_DIR:-/root/.ssh}:/ssh-source:ro
     expose:
       - "9080"
     healthcheck:
@@ -84,7 +83,7 @@ services:
       [
         "bash",
         "-lc",
-        "/usr/local/bin/prepare_ssh_dir.sh /ssh-source /root/.ssh && python3 -m worker.main"
+        "python3 -m worker.main"
       ]
     environment:
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
@@ -110,7 +109,31 @@ services:
       - ./data:/data
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${RACKPATCH_SSH_DIR:-/root/.ssh}:/ssh-source:ro
+
+  agent:
+    profiles: ["self-agent"]
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: rackpatch-self-agent
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      RACKPATCH_SERVER_URL: http://api:9080
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN:-}
+      RACKPATCH_AGENT_NAME: ${RACKPATCH_SELF_AGENT_NAME:-}
+      RACKPATCH_AGENT_DISPLAY_NAME: ${RACKPATCH_SELF_AGENT_DISPLAY_NAME:-}
+      RACKPATCH_AGENT_LABELS: ${RACKPATCH_SELF_AGENT_LABELS:-control-plane,self-agent}
+      RACKPATCH_AGENT_MODE: compose
+      RACKPATCH_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
+      RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
+      RACKPATCH_HOST_HELPER_SOCKET: ${RACKPATCH_SELF_AGENT_HELPER_SOCKET:-/run/rackpatch-host-helper/rackpatch-host-helper.sock}
+    volumes:
+      - ./data/self-agent:/var/lib/rackpatch-agent
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /run/rackpatch-host-helper:/run/rackpatch-host-helper
 
   web:
     build:

@@ -2,8 +2,6 @@
 
 import argparse
 import json
-import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +15,6 @@ sys.path.insert(0, str(RACKPATCH_ROOT / "app"))
 from common import stack_catalog  # noqa: E402
 
 
-INVENTORY_FILE = Path(os.environ.get("RACKPATCH_INVENTORY_FILE", RACKPATCH_ROOT / "inventory" / "hosts.yml"))
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1"}
 
 
@@ -89,61 +86,10 @@ def local_compose_config(stack: dict) -> dict:
     return json.loads(result.stdout)
 
 
-def wrap_remote_bash(script: str) -> str:
-    return f"bash -lc {shlex.quote(script)}"
-
-
-def remote_compose_command(stack: dict, *args: str) -> str:
-    env_parts = " ".join(
-        f"--env-file {shlex.quote(str(env_file))}" for env_file in stack.get("compose_env_files", [])
-    )
-    arg_parts = " ".join(shlex.quote(part) for part in args)
-    project_dir = shlex.quote(stack_path(stack))
-    compose_plugin = f"docker compose {env_parts} {arg_parts}".strip()
-    compose_legacy = f"docker-compose {env_parts} {arg_parts}".strip()
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"cd {project_dir}",
-            "if docker compose version >/dev/null 2>&1; then",
-            f"  {compose_plugin}",
-            "else",
-            f"  {compose_legacy}",
-            "fi",
-        ]
-    )
-    return wrap_remote_bash(script)
-
-
-def strip_ansible_header(output: str) -> str:
-    lines = output.splitlines()
-    if lines and " | " in lines[0] and lines[0].rstrip().endswith(">>"):
-        return "\n".join(lines[1:]).strip()
-    return output.strip()
-
-
-def run_remote_shell(host: str, command: str) -> tuple[int, str, str]:
-    result = subprocess.run(
-        ["ansible", "-i", str(INVENTORY_FILE), host, "-m", "shell", "-a", command],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode, strip_ansible_header(result.stdout), result.stderr.strip()
-
-
-def remote_compose_config(stack: dict, host: str) -> dict:
-    rc, stdout, stderr = run_remote_shell(host, remote_compose_command(stack, "config", "--format", "json"))
-    if rc != 0:
-        raise RuntimeError(stderr or stdout or f"compose config failed on {host}")
-    return json.loads(stdout)
-
-
 def compose_images(stack: dict, host: str) -> list[str]:
-    if is_local_host(host):
-        config = local_compose_config(stack)
-    else:
-        config = remote_compose_config(stack, host)
+    if not is_local_host(host):
+        raise RuntimeError("remote compose inspection was removed; use agent heartbeats for remote stack discovery")
+    config = local_compose_config(stack)
 
     images = []
     for service in (config.get("services") or {}).values():
@@ -155,16 +101,6 @@ def compose_images(stack: dict, host: str) -> list[str]:
 
 def local_image_attrs(docker_client, ref: str) -> dict:
     return docker_client.images.get(ref).attrs
-
-
-def remote_image_attrs(host: str, ref: str) -> dict:
-    rc, stdout, stderr = run_remote_shell(host, wrap_remote_bash(f"docker image inspect {shlex.quote(ref)}"))
-    if rc != 0:
-        raise RuntimeError(stderr or stdout or f"docker image inspect failed on {host}")
-    payload = json.loads(stdout)
-    if not payload:
-        raise RuntimeError(f"docker image inspect returned no payload for {ref} on {host}")
-    return payload[0]
 
 
 def registry_digest(docker_client, ref: str, cache: dict[str, dict[str, str | None]]) -> tuple[str | None, str | None]:
@@ -194,6 +130,10 @@ def evaluate_stack(stack: dict, docker_client, registry_cache: dict[str, dict[st
         "status": "unknown",
         "images": [],
     }
+    if not is_local_host(host):
+        report["status"] = "agent-heartbeat"
+        report["error"] = "Remote stack discovery is agent-reported now; worker-side remote inspection has been removed."
+        return report
 
     image_refs = compose_images(stack, host)
     report["image_count"] = len(image_refs)
@@ -209,7 +149,7 @@ def evaluate_stack(stack: dict, docker_client, registry_cache: dict[str, dict[st
             "remote_digest": None,
         }
         try:
-            image_attrs = local_image_attrs(docker_client, ref) if is_local_host(host) else remote_image_attrs(host, ref)
+            image_attrs = local_image_attrs(docker_client, ref)
             image_report["local_digest"] = get_local_digest(image_attrs, ref)
         except Exception as exc:  # noqa: BLE001
             image_report["status"] = "missing-local"

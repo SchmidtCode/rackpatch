@@ -139,8 +139,6 @@ def capabilities() -> list[str]:
         if action not in helper_actions:
             continue
         caps.add(capability)
-    if Path("/etc/pve").exists():
-        caps.add("proxmox")
     return sorted(caps)
 
 
@@ -381,7 +379,9 @@ def patch_packages(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
-    project_dir = payload["project_dir"]
+    project_dir = str(payload.get("project_dir") or "").strip()
+    if not project_dir:
+        return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
     compose_env_files = payload.get("compose_env_files", [])
     command = ["docker", "compose"]
     for env_file in compose_env_files:
@@ -389,6 +389,16 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     rc_config, out_config = run_command(command + ["config"], cwd=project_dir)
     if rc_config != 0:
         return {"exit_code": rc_config, "stdout": out_config}
+    if bool(payload.get("dry_run", False)):
+        return {
+            "exit_code": 0,
+            "stdout": "\n".join(
+                [
+                    out_config,
+                    "dry-run mode validated docker compose config only; no images were pulled and no services were restarted.",
+                ]
+            ).strip(),
+        }
     rc_pull, out_pull = run_command(command + ["pull"], cwd=project_dir)
     if rc_pull != 0:
         return {"exit_code": rc_pull, "stdout": out_pull}
