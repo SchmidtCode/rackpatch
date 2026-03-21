@@ -8,6 +8,7 @@ services:
       RACKPATCH_RUNTIME_ROOT: /workspace
       RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
+      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}/inventory/hosts.yml
       PYTHONPATH: /workspace/app:/opt/rackpatch/app
     volumes:
       - .:/workspace
@@ -21,6 +22,7 @@ services:
       RACKPATCH_RUNTIME_ROOT: /workspace
       RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
       ANSIBLE_CONFIG: /workspace/ansible.cfg
+      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}/inventory/hosts.yml
       PYTHONPATH: /workspace/app:/opt/rackpatch/app
     volumes:
       - .:/workspace

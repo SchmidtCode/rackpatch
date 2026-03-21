@@ -45,6 +45,10 @@ branch_exists() {
   git ls-remote --exit-code --heads "${repo_url}" "${ref}" >/dev/null 2>&1
 }
 
+tag_exists() {
+  git ls-remote --exit-code --tags "${repo_url}" "refs/tags/${ref}" >/dev/null 2>&1
+}
+
 normalize_image_tag() {
   local value="${1:-}"
   value="${value#v}"
@@ -92,7 +96,7 @@ run_compose() {
 
 if [[ ! -d "${install_dir}/.git" ]]; then
   rm -rf "${install_dir}"
-  if branch_exists; then
+  if branch_exists || tag_exists; then
     git clone --depth 1 --branch "${ref}" "${repo_url}" "${install_dir}"
   else
     git clone --depth 1 "${repo_url}" "${install_dir}"
@@ -104,6 +108,8 @@ else
   git -C "${install_dir}" fetch --prune --tags origin
   if branch_exists; then
     git -C "${install_dir}" checkout -B "${ref}" "origin/${ref}"
+  elif tag_exists; then
+    git -C "${install_dir}" checkout --detach "tags/${ref}"
   else
     git -C "${install_dir}" checkout "${ref}"
   fi

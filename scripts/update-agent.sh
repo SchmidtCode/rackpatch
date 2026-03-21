@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  update-agent.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
+  update-agent.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--stack-root DIR] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -18,6 +18,54 @@ install_ref=""
 tmp_root=""
 compose_override_name="compose.host-maintenance.yml"
 agent_env_name="agent.env"
+stack_roots=()
+
+add_stack_root() {
+  local value="${1:-}"
+  if [[ "${value}" == "/" ]]; then
+    value="/"
+  else
+    value="${value%/}"
+  fi
+  if [[ -z "${value}" ]]; then
+    return
+  fi
+  local existing
+  for existing in "${stack_roots[@]}"; do
+    if [[ "${existing}" == "${value}" ]]; then
+      return
+    fi
+  done
+  stack_roots+=("${value}")
+}
+
+stack_roots_env() {
+  local IFS=,
+  printf '%s\n' "${stack_roots[*]}"
+}
+
+import_stack_roots_from_compose() {
+  local target_dir="$1"
+  local current=""
+  if [[ ! -f "${target_dir}/compose.yml" ]]; then
+    return
+  fi
+  current="$(read_compose_env_value "${target_dir}" "RACKPATCH_AGENT_STACK_ROOTS")"
+  IFS=',' read -r -a current_roots <<< "${current}"
+  local root
+  for root in "${current_roots[@]}"; do
+    add_stack_root "${root}"
+  done
+}
+
+compose_has_stack_root_config() {
+  local target_dir="$1"
+  grep -q '^[[:space:]]*RACKPATCH_AGENT_STACK_ROOTS:' "${target_dir}/compose.yml"
+}
+
+if [[ -d /srv/compose ]]; then
+  add_stack_root /srv/compose
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --install-dir)
       install_dir="$2"
+      shift 2
+      ;;
+    --stack-root)
+      add_stack_root "$2"
       shift 2
       ;;
     --image)
@@ -215,11 +267,13 @@ rewrite_image_compose() {
   local bootstrap_token
   local agent_name
   local agent_labels
+  local stack_roots_csv
 
   server_url="$(read_compose_env_value "${target_dir}" "RACKPATCH_SERVER_URL")"
   bootstrap_token="$(read_compose_env_value "${target_dir}" "RACKPATCH_AGENT_BOOTSTRAP_TOKEN")"
   agent_name="$(read_compose_env_value "${target_dir}" "RACKPATCH_AGENT_NAME")"
   agent_labels="$(read_compose_env_value "${target_dir}" "RACKPATCH_AGENT_LABELS")"
+  stack_roots_csv="$(stack_roots_env)"
 
   if [[ -z "${server_url}" || -z "${bootstrap_token}" ]]; then
     echo "could not migrate ${target_dir}/compose.yml to image mode automatically" >&2
@@ -239,6 +293,7 @@ services:
       RACKPATCH_AGENT_LABELS: ${agent_labels}
       RACKPATCH_AGENT_MODE: ${runtime_mode}
       RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
+      RACKPATCH_AGENT_STACK_ROOTS: ${stack_roots_csv}
 EOF
   if [[ "${runtime_mode}" == "compose" ]]; then
     cat >> "${target_dir}/compose.yml" <<EOF
@@ -254,6 +309,12 @@ EOF
       - ${state_mount}:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
+  local stack_root
+  for stack_root in "${stack_roots[@]}"; do
+    cat >> "${target_dir}/compose.yml" <<EOF
+      - ${stack_root}:${stack_root}
+EOF
+  done
 }
 
 default_install_source
@@ -262,9 +323,10 @@ case "${mode}" in
   compose)
     target_dir="${compose_dir}"
     mkdir -p "${target_dir}"
+    import_stack_roots_from_compose "${target_dir}"
     agent_image="$(derive_agent_image || true)"
     if [[ -n "${agent_image}" ]]; then
-      if [[ -f "${target_dir}/compose.yml" ]] && ! compose_uses_image_env "${target_dir}"; then
+      if [[ -f "${target_dir}/compose.yml" ]] && { ! compose_uses_image_env "${target_dir}" || ! compose_has_stack_root_config "${target_dir}"; }; then
         rewrite_image_compose "${target_dir}" "compose" "./state"
       fi
       write_image_env "${target_dir}" "${agent_image}"
@@ -287,9 +349,10 @@ case "${mode}" in
   container)
     target_dir="${install_dir}"
     mkdir -p "${target_dir}"
+    import_stack_roots_from_compose "${target_dir}"
     agent_image="$(derive_agent_image || true)"
     if [[ -n "${agent_image}" ]]; then
-      if [[ -f "${target_dir}/compose.yml" ]] && ! compose_uses_image_env "${target_dir}"; then
+      if [[ -f "${target_dir}/compose.yml" ]] && { ! compose_uses_image_env "${target_dir}" || ! compose_has_stack_root_config "${target_dir}"; }; then
         rewrite_image_compose "${target_dir}" "container" "/var/lib/rackpatch-agent"
       fi
       write_image_env "${target_dir}" "${agent_image}"

@@ -99,6 +99,14 @@ socket_dir_path() {
   dirname "${socket_path}"
 }
 
+socket_group_id() {
+  local path="${1:-}"
+  if [[ -z "${path}" || ! -e "${path}" ]]; then
+    return 0
+  fi
+  stat -c '%g' "${path}" 2>/dev/null || true
+}
+
 resolve_actions() {
   local raw_actions=""
   case "${preset}" in
@@ -333,8 +341,10 @@ detect_compose_target() {
 }
 
 write_compose_override() {
-  local socket_dir
+  local socket_dir helper_socket_gid docker_socket_gid
   socket_dir="$(dirname "${socket_path}")"
+  helper_socket_gid="$(socket_group_id "${socket_path}")"
+  docker_socket_gid="$(socket_group_id /var/run/docker.sock)"
   if [[ -z "${compose_override_file}" ]]; then
     return
   fi
@@ -346,6 +356,21 @@ services:
     volumes:
       - ${socket_dir}:${socket_dir}
 EOF
+  if [[ "${docker_socket_gid}" =~ ^[0-9]+$ || "${helper_socket_gid}" =~ ^[0-9]+$ ]]; then
+    cat >> "${compose_override_file}" <<EOF
+    group_add:
+EOF
+    if [[ "${docker_socket_gid}" =~ ^[0-9]+$ ]]; then
+      cat >> "${compose_override_file}" <<EOF
+      - "${docker_socket_gid}"
+EOF
+    fi
+    if [[ "${helper_socket_gid}" =~ ^[0-9]+$ && "${helper_socket_gid}" != "${docker_socket_gid}" ]]; then
+      cat >> "${compose_override_file}" <<EOF
+      - "${helper_socket_gid}"
+EOF
+    fi
+  fi
 }
 
 restart_compose_agent() {

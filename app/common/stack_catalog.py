@@ -7,13 +7,14 @@ import re
 
 import yaml
 
-from common import config
+from common import agents as agent_records, config
 
 
 DEFAULT_DISCOVERED_RISK = "medium"
 DEFAULT_DISCOVERED_UPDATE_MODE = "approve"
 DISCOVERED_ORDER_BASE = 1000
 DISCOVERED_ORDER_STEP = 10
+LOCAL_HOST_KEYS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -44,10 +45,26 @@ def _path_key(value: str) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def stack_project_dir(stack: dict[str, Any] | None) -> str:
+    if not stack:
+        return ""
+    return _path_key(stack.get("project_dir") or stack.get("path"))
+
+
+def stack_runtime_host(stack: dict[str, Any] | None) -> str:
+    if not stack:
+        return "localhost"
+    host = _host_key(stack.get("host"))
+    guest_host = _host_key(stack.get("guest_host"))
+    if host in LOCAL_HOST_KEYS and guest_host not in LOCAL_HOST_KEYS:
+        return guest_host
+    return host
+
+
 def _defined_stack_keys(stacks: list[dict[str, Any]]) -> set[tuple[str, str]]:
     keys: set[tuple[str, str]] = set()
     for stack in stacks:
-        keys.add((_host_key(stack.get("host")), _path_key(stack.get("path") or stack.get("project_dir"))))
+        keys.add((stack_runtime_host(stack), stack_project_dir(stack)))
     return keys
 
 
@@ -63,12 +80,13 @@ def _iter_agent_projects() -> list[dict[str, Any]]:
     try:
         from common import db
 
-        rows = db.fetch_all("SELECT name, status, metadata FROM agents ORDER BY name")
+        rows = db.fetch_all("SELECT name, status, last_seen_at, metadata FROM agents ORDER BY name")
     except Exception:  # noqa: BLE001
         return []
 
     discovered: list[dict[str, Any]] = []
     for row in rows:
+        row = agent_records.with_effective_status(row)
         metadata = row.get("metadata") or {}
         docker_meta = metadata.get("docker") or {}
         compose_projects = docker_meta.get("compose_projects") or []

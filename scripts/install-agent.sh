@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--name NAME] [--labels a,b] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
+  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--stack-root DIR] [--name NAME] [--labels a,b] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -23,6 +23,35 @@ tmp_root=""
 systemd_agent_user="rackpatch-agent"
 compose_override_name="compose.host-maintenance.yml"
 agent_env_name="agent.env"
+stack_roots=()
+
+add_stack_root() {
+  local value="${1:-}"
+  if [[ "${value}" == "/" ]]; then
+    value="/"
+  else
+    value="${value%/}"
+  fi
+  if [[ -z "${value}" ]]; then
+    return
+  fi
+  local existing
+  for existing in "${stack_roots[@]}"; do
+    if [[ "${existing}" == "${value}" ]]; then
+      return
+    fi
+  done
+  stack_roots+=("${value}")
+}
+
+stack_roots_env() {
+  local IFS=,
+  printf '%s\n' "${stack_roots[*]}"
+}
+
+if [[ -d /srv/compose ]]; then
+  add_stack_root /srv/compose
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compose-dir)
       compose_dir="$2"
+      shift 2
+      ;;
+    --stack-root)
+      add_stack_root "$2"
       shift 2
       ;;
     --name)
@@ -179,6 +212,14 @@ RACKPATCH_AGENT_IMAGE=${agent_image}
 EOF
 }
 
+socket_group_id() {
+  local socket_path="${1:-}"
+  if [[ -z "${socket_path}" || ! -e "${socket_path}" ]]; then
+    return 0
+  fi
+  stat -c '%g' "${socket_path}" 2>/dev/null || true
+}
+
 compose_args() {
   local target_dir="$1"
   local -a args=(--env-file "${target_dir}/${agent_env_name}" -f "${target_dir}/compose.yml")
@@ -213,6 +254,10 @@ write_compose_file() {
   local runtime_mode="$2"
   local state_mount="$3"
   local use_build="$4"
+  local docker_socket_gid=""
+  local stack_roots_csv=""
+  docker_socket_gid="$(socket_group_id /var/run/docker.sock)"
+  stack_roots_csv="$(stack_roots_env)"
 
   cat > "${target_dir}/compose.yml" <<EOF
 services:
@@ -236,6 +281,7 @@ EOF
       RACKPATCH_AGENT_LABELS: ${labels}
       RACKPATCH_AGENT_MODE: ${runtime_mode}
       RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
+      RACKPATCH_AGENT_STACK_ROOTS: ${stack_roots_csv}
 EOF
   if [[ "${runtime_mode}" == "compose" ]]; then
     cat >> "${target_dir}/compose.yml" <<EOF
@@ -246,11 +292,23 @@ EOF
       RACKPATCH_AGENT_INSTALL_DIR: ${target_dir}
 EOF
   fi
+  if [[ "${docker_socket_gid}" =~ ^[0-9]+$ ]]; then
+    cat >> "${target_dir}/compose.yml" <<EOF
+    group_add:
+      - "${docker_socket_gid}"
+EOF
+  fi
   cat >> "${target_dir}/compose.yml" <<EOF
     volumes:
       - ${state_mount}:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
 EOF
+  local stack_root
+  for stack_root in "${stack_roots[@]}"; do
+    cat >> "${target_dir}/compose.yml" <<EOF
+      - ${stack_root}:${stack_root}
+EOF
+  done
 }
 
 default_install_source

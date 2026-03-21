@@ -35,6 +35,7 @@ services:
     environment:
       RACKPATCH_API_HOST: 0.0.0.0
       RACKPATCH_API_PORT: 9080
+      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/opt/rackpatch/sites/example}/inventory/hosts.yml
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
       RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
@@ -82,6 +83,7 @@ services:
         "python3 -m worker.main"
       ]
     environment:
+      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/opt/rackpatch/sites/example}/inventory/hosts.yml
       RACKPATCH_DB_DSN: postgresql://rackpatch:${RACKPATCH_DB_PASSWORD:-change-me}@db:5432/rackpatch
       RACKPATCH_DATA_ROOT: /data
       RACKPATCH_SITE_NAME: ${RACKPATCH_SITE_NAME:-example}
@@ -122,11 +124,13 @@ services:
       RACKPATCH_AGENT_LABELS: ${RACKPATCH_SELF_AGENT_LABELS:-control-plane,self-agent}
       RACKPATCH_AGENT_MODE: compose
       RACKPATCH_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
+      RACKPATCH_AGENT_STACK_ROOTS: ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       RACKPATCH_AGENT_STATE_DIR: /var/lib/rackpatch-agent
       RACKPATCH_HOST_HELPER_SOCKET: ${RACKPATCH_SELF_AGENT_HELPER_SOCKET:-/run/rackpatch-host-helper/rackpatch-host-helper.sock}
     volumes:
       - ./data/self-agent:/var/lib/rackpatch-agent
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /run/rackpatch-host-helper:/run/rackpatch-host-helper
 
   web:

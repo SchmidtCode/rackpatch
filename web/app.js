@@ -1115,6 +1115,7 @@ function renderStacks() {
             Require approval before live updates
           </label>
         </div>
+        ${payload.error ? `<div class="error">Docker update inventory is temporarily unavailable: ${escapeHtml(payload.error)}</div>` : ""}
       </div>
     `;
   }
@@ -1148,7 +1149,7 @@ function renderStacks() {
             const liveAccess = item.job_access?.docker_update_live || {};
             const checkAccess = item.job_access?.docker_check || {};
             const dryAccess = item.job_access?.docker_update_dry_run || {};
-            const resolvedHost = item.host === "localhost" && item.guest_host ? item.guest_host : item.host;
+            const resolvedHost = item.resolved_host || (item.host === "localhost" && item.guest_host ? item.guest_host : item.host);
             const host = escapeHtml(resolvedHost || "unknown");
             const projectDir = escapeHtml(item.project_dir || item.path || "not set");
             const envCount = (item.compose_env_files || []).length;
@@ -1163,6 +1164,11 @@ function renderStacks() {
               item.backup_before ? "backup_before" : "",
               item.snapshot_before ? "snapshot_before" : "",
             ].filter(Boolean);
+            const accessPrimary = liveAccess.eligible
+              ? "Live updates available through the stack agent."
+              : liveAccess.reason || checkAccess.reason || "Inspection unavailable.";
+            const accessSecondary =
+              !dryAccess.eligible && dryAccess.reason && dryAccess.reason !== accessPrimary ? dryAccess.reason : "";
             const detailsExpanded = Boolean(state.expandedStacks[item.name]);
             const detailReport = report && Object.keys(report).length ? renderInspectionServices(report) : emptyState("Run a check to load image-by-image details.");
             const detailSummary = changedServices
@@ -1207,8 +1213,8 @@ function renderStacks() {
                 </td>
                 <td>
                   ${policyBits.length ? policyBits.map((value) => badge(value, "warn")).join(" ") : badge("agent-ready", "good")}
-                  <span class="subline">${escapeHtml(liveAccess.eligible ? "Live updates available through the stack agent." : liveAccess.reason || checkAccess.reason || "Inspection unavailable.")}</span>
-                  ${!dryAccess.eligible && dryAccess.reason ? `<span class="subline">${escapeHtml(dryAccess.reason)}</span>` : ""}
+                  <span class="subline">${escapeHtml(accessPrimary)}</span>
+                  ${accessSecondary ? `<span class="subline">${escapeHtml(accessSecondary)}</span>` : ""}
                 </td>
                 <td>
                   <div class="table-actions">
@@ -1727,7 +1733,22 @@ async function loadDashboard() {
     api("/api/v1/agents"),
     api("/api/v1/hosts"),
     api("/api/v1/stacks"),
-    api("/api/v1/docker/updates"),
+    api("/api/v1/docker/updates").catch((error) => ({
+      summary: {
+        total_stacks: 0,
+        checkable_stacks: 0,
+        checked_stacks: 0,
+        outdated_stacks: 0,
+        outdated_images: 0,
+        selectable_stacks: 0,
+        blocked_live_updates: 0,
+        running_checks: 0,
+        failed_checks: 0,
+        running_updates: 0,
+      },
+      items: [],
+      error: error.message,
+    })),
     api("/api/v1/jobs"),
     api("/api/v1/schedules"),
     api("/api/v1/backups"),

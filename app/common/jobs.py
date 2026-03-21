@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from common import config, control_plane, db, job_catalog, notify, releases, runtime_settings, site
+from common import agents as agent_records, config, control_plane, db, job_catalog, notify, releases, runtime_settings, site, stack_catalog
 
 
 PACKAGE_JOB_KINDS = {"package_check", "package_patch"}
@@ -100,7 +100,7 @@ def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any])
     host_name = target_ref
     if target_type == "stack":
         stack = site.find_stack(target_ref)
-        host_name = (stack or {}).get("host", target_ref)
+        host_name = stack_catalog.stack_runtime_host(stack) if stack else target_ref
 
     row = db.fetch_one("SELECT id FROM agents WHERE name = %s", (host_name,))
     if row:
@@ -108,10 +108,16 @@ def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any])
     return None
 
 
-def _agent_capabilities(agent_id: str | None) -> set[str]:
+def _agent_row(agent_id: str | None) -> dict[str, Any] | None:
     if not agent_id:
-        return set()
-    row = db.fetch_one("SELECT capabilities, metadata FROM agents WHERE id = %s", (agent_id,))
+        return None
+    row = db.fetch_one("SELECT capabilities, metadata, status, last_seen_at FROM agents WHERE id = %s", (agent_id,))
+    if not row:
+        return None
+    return agent_records.with_effective_status(row)
+
+
+def _agent_capabilities_from_row(row: dict[str, Any] | None) -> set[str]:
     values = (row or {}).get("capabilities") or []
     selected = {str(value) for value in values if str(value).strip()}
     metadata = (row or {}).get("metadata") or {}
@@ -123,6 +129,10 @@ def _agent_capabilities(agent_id: str | None) -> set[str]:
         if action in actions:
             selected.add(capability)
     return selected
+
+
+def _agent_capabilities(agent_id: str | None) -> set[str]:
+    return _agent_capabilities_from_row(_agent_row(agent_id))
 
 
 def _site_host(target_ref: str) -> dict[str, Any] | None:
@@ -278,7 +288,7 @@ def _docker_stack_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -
     if not stack:
         return f"{target_ref} is not present in the stack catalog."
 
-    project_dir = str(stack.get("path") or stack.get("project_dir") or "").strip()
+    project_dir = stack_catalog.stack_project_dir(stack)
     if not project_dir:
         return f"{target_ref} is missing path or project_dir."
 
@@ -322,7 +332,20 @@ def _agent_capability_error(kind: str, target_ref: str, payload: dict[str, Any],
         return blocker
     if not agent_id:
         return f"No enrolled agent found for {target_ref}."
-    capabilities = _agent_capabilities(agent_id)
+    row = _agent_row(agent_id)
+    if not row:
+        return f"No enrolled agent found for {target_ref}."
+    if str(row.get("status") or "").lower() != "online":
+        return f"Agent for {target_ref} is offline."
+    if kind in DOCKER_STACK_JOB_KINDS:
+        project_dir = str(payload.get("project_dir") or "").strip()
+        if not project_dir:
+            stack = site.find_stack(target_ref)
+            project_dir = stack_catalog.stack_project_dir(stack)
+        access_error = agent_records.project_dir_access_reason(row, project_dir)
+        if access_error:
+            return access_error
+    capabilities = _agent_capabilities_from_row(row)
     required = AGENT_JOB_CAPABILITIES.get(kind, set())
     if required.issubset(capabilities):
         return None
@@ -605,9 +628,9 @@ def _create_docker_stack_jobs(
         child_payload.pop("target_agent_id", None)
         child_payload["selected_stacks"] = [stack_name]
         child_payload["stack_name"] = stack_name
-        child_payload["project_dir"] = str(stack.get("path") or stack.get("project_dir") or "")
+        child_payload["project_dir"] = stack_catalog.stack_project_dir(stack)
         child_payload["compose_env_files"] = list(stack.get("compose_env_files") or [])
-        child_payload["host"] = str(stack.get("host") or "")
+        child_payload["host"] = stack_catalog.stack_runtime_host(stack)
         child_payload["backup_before"] = bool(stack.get("backup_before"))
         child_payload["snapshot_before"] = bool(stack.get("snapshot_before"))
         child_payload["risk"] = str(stack.get("risk") or "")

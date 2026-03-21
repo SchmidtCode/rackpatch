@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from common import auth, config, control_plane, db, job_catalog, jobs, notify, releases, runtime_settings, site
+from common import agents as agent_records, auth, config, control_plane, db, job_catalog, jobs, notify, releases, runtime_settings, site, stack_catalog
 
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
@@ -33,6 +33,54 @@ def on_startup() -> None:
 
 def _json_body(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _matching_agent_rows(
+    cur: Any,
+    *,
+    name: str,
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT id, name, status, last_seen_at, metadata
+        FROM agents
+        WHERE name <> %s
+        ORDER BY last_seen_at DESC
+        """,
+        (name,),
+    )
+    matches: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        if not agent_records.same_identity(row.get("metadata"), metadata):
+            continue
+        matches.append(agent_records.with_effective_status(row))
+    return matches
+
+
+def _reusable_agent_row(cur: Any, *, name: str, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    for row in _matching_agent_rows(cur, name=name, metadata=metadata):
+        if agent_records.can_reuse_agent_record(row, metadata):
+            return row
+    return None
+
+
+def _prune_stale_agent_duplicates(
+    cur: Any,
+    *,
+    current_id: str,
+    name: str,
+    metadata: dict[str, Any],
+) -> None:
+    for row in _matching_agent_rows(cur, name=name, metadata=metadata):
+        if str(row.get("id") or "") == current_id:
+            continue
+        if str(row.get("status") or "").lower() == "online":
+            continue
+        cur.execute("SELECT 1 FROM jobs WHERE target_agent_id = %s LIMIT 1", (row["id"],))
+        if cur.fetchone() is not None:
+            continue
+        cur.execute("DELETE FROM agents WHERE id = %s", (row["id"],))
 
 
 def _validate_agent_secret(agent_id: str, provided: str | None) -> None:
@@ -188,10 +236,96 @@ def _latest_stack_job_map(kind: str) -> dict[str, dict[str, Any]]:
     return {str(row["target_ref"]): row for row in rows}
 
 
+def _agent_capability_set(agent: dict[str, Any] | None) -> set[str]:
+    if not agent:
+        return set()
+    values = agent.get("capabilities") or []
+    selected = {str(value) for value in values if str(value).strip()}
+    metadata = agent.get("metadata") or {}
+    selected.update(str(value) for value in (metadata.get("capabilities") or []) if str(value).strip())
+    return selected
+
+
+def _docker_stack_access(
+    stack: dict[str, Any],
+    agents_by_name: dict[str, dict[str, Any]],
+    *,
+    kind: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    project_dir = stack_catalog.stack_project_dir(stack)
+    if not project_dir:
+        reason = f"{stack.get('name') or 'stack'} is missing path or project_dir."
+        return {"eligible": False, "reason": reason, "required_capabilities": [], "target_agent_id": None}
+
+    host_name = stack_catalog.stack_runtime_host(stack)
+    agent = agents_by_name.get(host_name)
+    if not agent:
+        reason = f"No enrolled agent found for {stack.get('name') or host_name or 'stack'}."
+        required = ["docker-stack-inspect"] if kind == "docker_check" else ["docker"]
+        return {"eligible": False, "reason": reason, "required_capabilities": required, "target_agent_id": None}
+    if str(agent.get("status") or "").lower() != "online":
+        reason = f"Agent for {stack.get('name') or host_name or 'stack'} is offline."
+        required = ["docker-stack-inspect"] if kind == "docker_check" else ["docker"]
+        return {
+            "eligible": False,
+            "reason": reason,
+            "required_capabilities": required,
+            "target_agent_id": str(agent.get("id") or ""),
+        }
+
+    access_error = agent_records.project_dir_access_reason(agent, project_dir)
+    if access_error:
+        required = ["docker-stack-inspect"] if kind == "docker_check" else ["docker"]
+        return {
+            "eligible": False,
+            "reason": access_error,
+            "required_capabilities": required,
+            "target_agent_id": str(agent.get("id") or ""),
+        }
+
+    if kind == "docker_update" and not dry_run:
+        if bool(stack.get("snapshot_before")):
+            return {
+                "eligible": False,
+                "reason": "This stack requires snapshot_before, which is not available through the agent-only Docker update path.",
+                "required_capabilities": ["docker"],
+                "target_agent_id": str(agent.get("id") or ""),
+            }
+        if bool(stack.get("backup_before")):
+            return {
+                "eligible": False,
+                "reason": "This stack requires backup_before, which is not available through the agent-only Docker update path.",
+                "required_capabilities": ["docker"],
+                "target_agent_id": str(agent.get("id") or ""),
+            }
+
+    required = {"docker-stack-inspect"} if kind == "docker_check" else {"docker"}
+    capabilities = _agent_capability_set(agent)
+    if not required.issubset(capabilities):
+        label = ", ".join(sorted(required))
+        reason = f"Agent for {stack.get('name') or host_name or 'stack'} does not advertise {label}."
+        return {
+            "eligible": False,
+            "reason": reason,
+            "required_capabilities": sorted(required),
+            "target_agent_id": str(agent.get("id") or ""),
+        }
+
+    return {
+        "eligible": True,
+        "reason": "",
+        "required_capabilities": sorted(required),
+        "target_agent_id": str(agent.get("id") or ""),
+    }
+
+
 def _docker_updates_payload() -> dict[str, Any]:
     stacks = site.load_stacks()
     check_jobs = _latest_stack_job_map("docker_check")
     update_jobs = _latest_stack_job_map("docker_update")
+    agent_rows = db.fetch_all("SELECT id, name, capabilities, metadata, status, last_seen_at FROM agents ORDER BY name")
+    agents_by_name = {str(row["name"]): agent_records.with_effective_status(row) for row in agent_rows}
     items: list[dict[str, Any]] = []
 
     for stack in stacks:
@@ -199,9 +333,9 @@ def _docker_updates_payload() -> dict[str, Any]:
         if not stack_name:
             continue
 
-        check_access = jobs.stack_job_access("docker_check", stack_name, {})
-        live_access = jobs.stack_job_access("docker_update", stack_name, {"dry_run": False})
-        dry_access = jobs.stack_job_access("docker_update", stack_name, {"dry_run": True})
+        check_access = _docker_stack_access(stack, agents_by_name, kind="docker_check")
+        live_access = _docker_stack_access(stack, agents_by_name, kind="docker_update", dry_run=False)
+        dry_access = _docker_stack_access(stack, agents_by_name, kind="docker_update", dry_run=True)
         latest_check = check_jobs.get(stack_name)
         latest_update = update_jobs.get(stack_name)
 
@@ -225,7 +359,8 @@ def _docker_updates_payload() -> dict[str, Any]:
 
         item = {
             **stack,
-            "project_dir": str(stack.get("project_dir") or stack.get("path") or ""),
+            "project_dir": stack_catalog.stack_project_dir(stack),
+            "resolved_host": stack_catalog.stack_runtime_host(stack),
             "job_access": {
                 "docker_check": check_access,
                 "docker_update_live": live_access,
@@ -403,7 +538,7 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     public_settings = runtime_settings.get_public_settings()
     base_identities = _public_base_host_identities(public_settings)
     known_agents = {
-        row["name"]: row
+        row["name"]: agent_records.with_effective_status(row)
         for row in db.fetch_all(
             """
             SELECT id, name, display_name, status, capabilities, metadata, last_seen_at
@@ -440,14 +575,17 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 def agents(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     public_settings = runtime_settings.get_public_settings()
-    items = db.fetch_all(
-        """
-        SELECT id, name, display_name, transport, platform, version, capabilities, labels,
-               metadata, status, last_seen_at, created_at, updated_at
-        FROM agents
-        ORDER BY name
-        """
-    )
+    items = [
+        agent_records.with_effective_status(item)
+        for item in db.fetch_all(
+            """
+            SELECT id, name, display_name, transport, platform, version, capabilities, labels,
+                   metadata, status, last_seen_at, created_at, updated_at
+            FROM agents
+            ORDER BY name
+            """
+        )
+    ]
     release_payload = releases.build_release_status(public_settings, items)
     latest_version = str((release_payload.get("latest") or {}).get("version") or "")
     latest_ref = latest_version or str(public_settings.get("repo_ref") or "")
@@ -737,39 +875,86 @@ def register_agent(
     if not name:
         raise HTTPException(status_code=400, detail="agent name is required")
 
+    display_name = str(payload.get("display_name", name))
+    transport = str(payload.get("transport", "poll"))
+    platform_name = str(payload.get("platform", "linux"))
+    version = str(payload.get("version", "unknown"))
+    capabilities_json = json.dumps(payload.get("capabilities", []))
+    labels_json = json.dumps(payload.get("labels", []))
+    metadata = _json_body(payload.get("metadata"))
+    metadata_json = json.dumps(metadata)
     secret = auth.random_token("rackpatch-secret-")
     with db.db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO agents (name, display_name, secret_hash, transport, platform, version, capabilities, labels, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (name) DO UPDATE SET
-              display_name = EXCLUDED.display_name,
-              secret_hash = EXCLUDED.secret_hash,
-              transport = EXCLUDED.transport,
-              platform = EXCLUDED.platform,
-              version = EXCLUDED.version,
-              capabilities = EXCLUDED.capabilities,
-              labels = EXCLUDED.labels,
-              metadata = EXCLUDED.metadata,
-              updated_at = NOW(),
-              last_seen_at = NOW(),
-              status = 'online'
-            RETURNING id, name, display_name, transport, platform, version, capabilities, labels, metadata
-            """,
-            (
-                name,
-                str(payload.get("display_name", name)),
-                auth.hash_token(secret),
-                str(payload.get("transport", "poll")),
-                str(payload.get("platform", "linux")),
-                str(payload.get("version", "unknown")),
-                json.dumps(payload.get("capabilities", [])),
-                json.dumps(payload.get("labels", [])),
-                json.dumps(payload.get("metadata", {})),
-            ),
-        )
-        row = cur.fetchone()
+        row = None
+        cur.execute("SELECT id FROM agents WHERE name = %s", (name,))
+        if cur.fetchone() is None:
+            reusable = _reusable_agent_row(cur, name=name, metadata=metadata)
+            if reusable is not None:
+                cur.execute(
+                    """
+                    UPDATE agents
+                    SET name = %s,
+                        display_name = %s,
+                        secret_hash = %s,
+                        transport = %s,
+                        platform = %s,
+                        version = %s,
+                        capabilities = %s,
+                        labels = %s,
+                        metadata = %s,
+                        updated_at = NOW(),
+                        last_seen_at = NOW(),
+                        status = 'online'
+                    WHERE id = %s
+                    RETURNING id, name, display_name, transport, platform, version, capabilities, labels, metadata
+                    """,
+                    (
+                        name,
+                        display_name,
+                        auth.hash_token(secret),
+                        transport,
+                        platform_name,
+                        version,
+                        capabilities_json,
+                        labels_json,
+                        metadata_json,
+                        reusable["id"],
+                    ),
+                )
+                row = cur.fetchone()
+        if row is None:
+            cur.execute(
+                """
+                INSERT INTO agents (name, display_name, secret_hash, transport, platform, version, capabilities, labels, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (name) DO UPDATE SET
+                  display_name = EXCLUDED.display_name,
+                  secret_hash = EXCLUDED.secret_hash,
+                  transport = EXCLUDED.transport,
+                  platform = EXCLUDED.platform,
+                  version = EXCLUDED.version,
+                  capabilities = EXCLUDED.capabilities,
+                  labels = EXCLUDED.labels,
+                  metadata = EXCLUDED.metadata,
+                  updated_at = NOW(),
+                  last_seen_at = NOW(),
+                  status = 'online'
+                RETURNING id, name, display_name, transport, platform, version, capabilities, labels, metadata
+                """,
+                (
+                    name,
+                    display_name,
+                    auth.hash_token(secret),
+                    transport,
+                    platform_name,
+                    version,
+                    capabilities_json,
+                    labels_json,
+                    metadata_json,
+                ),
+            )
+            row = cur.fetchone()
+        _prune_stale_agent_duplicates(cur, current_id=str(row["id"]), name=name, metadata=metadata)
         cur.execute(
             "UPDATE agent_tokens SET last_used_at = NOW() WHERE id = %s",
             (token_row["id"],),

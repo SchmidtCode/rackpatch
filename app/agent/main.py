@@ -35,6 +35,7 @@ AGENT_LABELS = [
 AGENT_VERSION = config.env("RACKPATCH_AGENT_VERSION", config.APP_VERSION)
 AGENT_INSTALL_DIR = config.env("RACKPATCH_AGENT_INSTALL_DIR", "")
 AGENT_COMPOSE_DIR = config.env("RACKPATCH_AGENT_COMPOSE_DIR", "")
+AGENT_STACK_ROOTS_RAW = config.env("RACKPATCH_AGENT_STACK_ROOTS", "")
 COMPOSE_DISCOVERY_TTL_SECONDS = int(config.env("RACKPATCH_AGENT_COMPOSE_DISCOVERY_TTL", "300"))
 HOST_HELPER_SOCKET = config.env(
     "RACKPATCH_HOST_HELPER_SOCKET",
@@ -56,6 +57,26 @@ _compose_discovery_cache: dict[str, Any] = {
 
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": f"rackpatch-agent/{AGENT_VERSION}"})
+
+
+def _normalize_path(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "/":
+        return text
+    return text.rstrip("/")
+
+
+def _parse_path_list(value: Any) -> list[str]:
+    raw_items = value if isinstance(value, (list, tuple, set)) else str(value or "").split(",")
+    items: list[str] = []
+    for item in raw_items:
+        normalized = _normalize_path(item)
+        if normalized and normalized not in items:
+            items.append(normalized)
+    return items
+
+
+AGENT_STACK_ROOTS = _parse_path_list(AGENT_STACK_ROOTS_RAW)
 
 
 def load_state() -> dict[str, Any]:
@@ -203,6 +224,15 @@ def capabilities() -> list[str]:
 
 
 def register() -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "python": sys.version.split()[0],
+        "mode": AGENT_MODE,
+        "hostname": socket.gethostname(),
+        "install_dir": AGENT_INSTALL_DIR,
+        "compose_dir": AGENT_COMPOSE_DIR,
+    }
+    if AGENT_STACK_ROOTS:
+        metadata["stack_roots"] = AGENT_STACK_ROOTS
     response = SESSION.post(
         f"{SERVER_URL}/api/v1/agents/register",
         headers={"X-Rackpatch-Agent-Token": BOOTSTRAP_TOKEN},
@@ -214,13 +244,7 @@ def register() -> dict[str, Any]:
             "version": AGENT_VERSION,
             "capabilities": capabilities(),
             "labels": AGENT_LABELS,
-            "metadata": {
-                "python": sys.version.split()[0],
-                "mode": AGENT_MODE,
-                "hostname": socket.gethostname(),
-                "install_dir": AGENT_INSTALL_DIR,
-                "compose_dir": AGENT_COMPOSE_DIR,
-            },
+            "metadata": metadata,
         },
         timeout=30,
     )
@@ -324,6 +348,7 @@ def heartbeat_metadata(current_capabilities: list[str] | None = None) -> dict[st
     current_capabilities = current_capabilities if current_capabilities is not None else capabilities()
     metadata = {
         "capabilities": current_capabilities,
+        "hostname": socket.gethostname(),
         "mode": AGENT_MODE,
         "host_maintenance": host_maintenance_metadata(),
     }
@@ -331,9 +356,12 @@ def heartbeat_metadata(current_capabilities: list[str] | None = None) -> dict[st
         metadata["install_dir"] = AGENT_INSTALL_DIR
     if AGENT_COMPOSE_DIR:
         metadata["compose_dir"] = AGENT_COMPOSE_DIR
+    if AGENT_STACK_ROOTS:
+        metadata["stack_roots"] = AGENT_STACK_ROOTS
     if docker_capabilities_available():
         metadata["docker"] = {
             "compose_projects": compose_projects_metadata(),
+            "stack_roots": AGENT_STACK_ROOTS,
         }
     return metadata
 
@@ -406,6 +434,36 @@ def run_command(command: list[str], cwd: str | None = None) -> tuple[int, str]:
     for raw in process.stdout:
         output.append(raw.rstrip("\n"))
     return process.wait(), "\n".join(output)
+
+
+def _path_is_within(root: str, candidate: str) -> bool:
+    normalized_root = _normalize_path(root)
+    normalized_candidate = _normalize_path(candidate)
+    if not normalized_root or not normalized_candidate:
+        return False
+    if normalized_root == "/":
+        return normalized_candidate.startswith("/")
+    return normalized_candidate == normalized_root or normalized_candidate.startswith(f"{normalized_root}/")
+
+
+def _project_dir_access_error(project_dir: str) -> str | None:
+    normalized_dir = _normalize_path(project_dir)
+    if not normalized_dir:
+        return None
+    if Path(normalized_dir).exists():
+        return None
+    if AGENT_MODE not in {"compose", "container"}:
+        return None
+    if any(_path_is_within(root, normalized_dir) for root in AGENT_STACK_ROOTS):
+        return (
+            f"{normalized_dir} is configured as a mounted stack root, but the path is not available inside "
+            "this agent container."
+        )
+    roots_label = ", ".join(AGENT_STACK_ROOTS) if AGENT_STACK_ROOTS else "none configured"
+    return (
+        f"{normalized_dir} is outside this agent container's mounted stack roots ({roots_label}). "
+        "Set RACKPATCH_AGENT_STACK_ROOTS and mount the same host path(s) into the agent container."
+    )
 
 
 def _result_from_helper(action: str, *, timeout: float = 120.0, **payload: Any) -> dict[str, Any]:
@@ -695,6 +753,9 @@ def docker_check(payload: dict[str, Any]) -> dict[str, Any]:
     host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
     if not project_dir:
         return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
+    access_error = _project_dir_access_error(project_dir)
+    if access_error:
+        return {"exit_code": 1, "error": access_error, "stdout": access_error}
 
     compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]
     try:
@@ -730,6 +791,9 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(payload.get("project_dir") or "").strip()
     if not project_dir:
         return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
+    access_error = _project_dir_access_error(project_dir)
+    if access_error:
+        return {"exit_code": 1, "error": access_error, "stdout": access_error}
     stack_name = _stack_name_from_payload(payload)
     host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
     compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]

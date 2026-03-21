@@ -4,7 +4,7 @@ import json
 import shlex
 from typing import Any
 
-from common import config
+from common import agents as agent_records, config
 
 
 def _shell_quote(value: Any) -> str:
@@ -250,6 +250,7 @@ def build_agent_update_plan(
     )
     items: list[dict[str, Any]] = []
     for agent in ordered_agents:
+        agent = agent_records.with_effective_status(agent)
         metadata = agent.get("metadata") or {}
         mode = str(metadata.get("mode") or "").strip()
         label = str(agent.get("display_name") or agent.get("name") or agent.get("id") or "agent")

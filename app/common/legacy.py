@@ -16,6 +16,7 @@ def runtime_env() -> dict[str, str]:
         {
             "PYTHONUNBUFFERED": "1",
             "ANSIBLE_CONFIG": str(config.resolve_runtime_path(config.ANSIBLE_CONFIG_PATH)),
+            "ANSIBLE_INVENTORY": str(site.inventory_path()),
             "RACKPATCH_SITE_ROOT": str(site.site_root()),
             "RACKPATCH_STACKS_FILE": str(site.stacks_path()),
             "RACKPATCH_INVENTORY_FILE": str(site.inventory_path()),
