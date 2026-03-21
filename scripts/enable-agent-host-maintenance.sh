@@ -13,7 +13,7 @@ mode=""
 compose_dir="/srv/compose/rackpatch-agent"
 install_dir="/opt/rackpatch-agent"
 helper_dir="/opt/rackpatch-host-helper"
-socket_path="/run/rackpatch-host-helper.sock"
+socket_path="/run/rackpatch-host-helper/rackpatch-host-helper.sock"
 helper_user="rackpatch-agent"
 preset="packages"
 allow_actions=""
@@ -21,6 +21,10 @@ install_source=""
 install_ref=""
 tmp_root=""
 selected_actions=()
+compose_file=""
+compose_service=""
+compose_profile=""
+compose_override_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,9 +88,6 @@ if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "system
 fi
 
 normalize_socket_path() {
-  if [[ "${mode}" != "compose" && "${mode}" != "container" ]]; then
-    return
-  fi
   local socket_dir
   socket_dir="$(dirname "${socket_path}")"
   if [[ "${socket_dir}" == "/run" ]]; then
@@ -303,13 +304,43 @@ restart_helper_service() {
   systemctl restart rackpatch-host-helper.service
 }
 
-write_compose_override() {
+detect_compose_target() {
   local target_dir="$1"
+  local candidate=""
+  for candidate in docker-compose.yml compose.yml; do
+    if [[ -f "${target_dir}/${candidate}" ]]; then
+      compose_file="${target_dir}/${candidate}"
+      break
+    fi
+  done
+  if [[ -z "${compose_file}" ]]; then
+    echo "missing compose file in ${target_dir}" >&2
+    exit 1
+  fi
+  if grep -q '^[[:space:]]\{2\}rackpatch-agent:' "${compose_file}"; then
+    compose_service="rackpatch-agent"
+    compose_override_file="${target_dir}/compose.host-maintenance.yml"
+    return
+  fi
+  if grep -q '^[[:space:]]\{2\}agent:' "${compose_file}"; then
+    compose_service="agent"
+    compose_profile="self-agent"
+    compose_override_file=""
+    return
+  fi
+  echo "could not find an agent service in ${compose_file}" >&2
+  exit 1
+}
+
+write_compose_override() {
   local socket_dir
   socket_dir="$(dirname "${socket_path}")"
-  cat > "${target_dir}/compose.host-maintenance.yml" <<EOF
+  if [[ -z "${compose_override_file}" ]]; then
+    return
+  fi
+  cat > "${compose_override_file}" <<EOF
 services:
-  rackpatch-agent:
+  ${compose_service}:
     environment:
       RACKPATCH_HOST_HELPER_SOCKET: ${socket_path}
     volumes:
@@ -319,17 +350,23 @@ EOF
 
 restart_compose_agent() {
   local target_dir="$1"
-  local -a files=(-f "${target_dir}/compose.yml")
-  if [[ -f "${target_dir}/agent.env" ]]; then
+  detect_compose_target "${target_dir}"
+  write_compose_override
+  local -a files=(-f "${compose_file}")
+  local -a compose_options=()
+  if [[ -f "${target_dir}/agent.env" && "$(basename "${compose_file}")" == "compose.yml" ]]; then
     files=(--env-file "${target_dir}/agent.env" "${files[@]}")
   fi
-  if [[ -f "${target_dir}/compose.host-maintenance.yml" ]]; then
-    files+=(-f "${target_dir}/compose.host-maintenance.yml")
+  if [[ -n "${compose_override_file}" && -f "${compose_override_file}" ]]; then
+    files+=(-f "${compose_override_file}")
   fi
-  if grep -q '^[[:space:]]*build:' "${target_dir}/compose.yml"; then
-    docker compose "${files[@]}" up -d --build
+  if [[ -n "${compose_profile}" ]]; then
+    compose_options+=(--profile "${compose_profile}")
+  fi
+  if grep -q '^[[:space:]]*build:' "${compose_file}"; then
+    docker compose "${files[@]}" "${compose_options[@]}" up -d --build "${compose_service}"
   else
-    docker compose "${files[@]}" up -d
+    docker compose "${files[@]}" "${compose_options[@]}" up -d "${compose_service}"
   fi
 }
 
@@ -359,11 +396,9 @@ restart_helper_service
 
 case "${mode}" in
   compose)
-    write_compose_override "${compose_dir}"
     restart_compose_agent "${compose_dir}"
     ;;
   container)
-    write_compose_override "${install_dir}"
     restart_compose_agent "${install_dir}"
     ;;
   systemd)

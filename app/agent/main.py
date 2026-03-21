@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import docker
 import requests
 
 from common import config
@@ -32,7 +33,11 @@ AGENT_VERSION = config.env("RACKPATCH_AGENT_VERSION", config.APP_VERSION)
 AGENT_INSTALL_DIR = config.env("RACKPATCH_AGENT_INSTALL_DIR", "")
 AGENT_COMPOSE_DIR = config.env("RACKPATCH_AGENT_COMPOSE_DIR", "")
 COMPOSE_DISCOVERY_TTL_SECONDS = int(config.env("RACKPATCH_AGENT_COMPOSE_DISCOVERY_TTL", "300"))
-HOST_HELPER_SOCKET = config.env("RACKPATCH_HOST_HELPER_SOCKET", "/run/rackpatch-host-helper.sock")
+HOST_HELPER_SOCKET = config.env(
+    "RACKPATCH_HOST_HELPER_SOCKET",
+    "/run/rackpatch-host-helper/rackpatch-host-helper.sock",
+)
+DOCKER_SOCKET = Path("/var/run/docker.sock")
 
 HOST_MAINTENANCE_CAPABILITIES = {
     "package_check": "host-package-check",
@@ -53,7 +58,11 @@ SESSION.headers.update({"User-Agent": f"rackpatch-agent/{AGENT_VERSION}"})
 def load_state() -> dict[str, Any]:
     if not STATE_FILE.exists():
         return {}
-    return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        clear_state()
+        return {}
 
 
 def save_state(payload: dict[str, Any]) -> None:
@@ -64,6 +73,49 @@ def save_state(payload: dict[str, Any]) -> None:
 def clear_state() -> None:
     if STATE_FILE.exists():
         STATE_FILE.unlink()
+
+
+def docker_socket_available() -> bool:
+    return DOCKER_SOCKET.exists()
+
+
+def docker_client() -> docker.DockerClient | None:
+    if not docker_socket_available():
+        return None
+    client: docker.DockerClient | None = None
+    try:
+        client = docker.from_env()
+        client.ping()
+        return client
+    except Exception:  # noqa: BLE001
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+
+def docker_command() -> str | None:
+    return shutil.which("docker")
+
+
+def compose_base_command() -> list[str] | None:
+    docker_cli = docker_command()
+    if docker_cli:
+        return [docker_cli, "compose"]
+    docker_compose = shutil.which("docker-compose")
+    if docker_compose:
+        return [docker_compose]
+    return None
+
+
+def docker_capabilities_available() -> bool:
+    client = docker_client()
+    if client is None:
+        return False
+    client.close()
+    return True
 
 
 def _helper_request(payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
@@ -132,7 +184,7 @@ def host_maintenance_metadata() -> dict[str, Any]:
 
 def capabilities() -> list[str]:
     caps: set[str] = set()
-    if shutil.which("docker"):
+    if docker_capabilities_available():
         caps.add("docker")
         caps.add("docker-exec")
         caps.add("docker-compose-discovery")
@@ -197,53 +249,43 @@ def _run_json_command(command: list[str]) -> Any:
 
 
 def discover_compose_projects() -> list[dict[str, Any]]:
-    if not shutil.which("docker"):
-        return []
-
-    rc, container_ids_raw = run_command(
-        ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project"]
-    )
-    if rc != 0:
-        return []
-
-    container_ids = [item.strip() for item in container_ids_raw.splitlines() if item.strip()]
-    if not container_ids:
+    client = docker_client()
+    if client is None:
         return []
 
     try:
-        payload = _run_json_command(["docker", "inspect", *container_ids])
-    except Exception:  # noqa: BLE001
-        return []
+        containers = client.containers.list(all=True, filters={"label": "com.docker.compose.project"})
+        projects: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for container in containers:
+            labels = ((container.attrs.get("Config") or {}).get("Labels") or {})
+            project_name = str(labels.get("com.docker.compose.project") or "").strip()
+            project_dir = str(labels.get("com.docker.compose.project.working_dir") or "").strip()
+            config_files_raw = str(labels.get("com.docker.compose.project.config_files") or "").strip()
+            if not project_name or not project_dir:
+                continue
 
-    projects: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for container in payload:
-        labels = ((container.get("Config") or {}).get("Labels") or {})
-        project_name = str(labels.get("com.docker.compose.project") or "").strip()
-        project_dir = str(labels.get("com.docker.compose.project.working_dir") or "").strip()
-        config_files_raw = str(labels.get("com.docker.compose.project.config_files") or "").strip()
-        if not project_name or not project_dir:
-            continue
-
-        config_files = [item.strip() for item in config_files_raw.split(",") if item.strip()]
-        key = (project_name, project_dir, ",".join(config_files))
-        project = projects.setdefault(
-            key,
-            {
-                "project_name": project_name,
-                "project_dir": project_dir,
-                "config_files": config_files,
-                "compose_env_files": [".env"] if Path(project_dir, ".env").exists() else [],
-                "services": [],
-            },
-        )
-        project["services"].append(
-            {
-                "service": str(labels.get("com.docker.compose.service") or "").strip(),
-                "container_name": str(container.get("Name") or "").lstrip("/"),
-                "image": str((container.get("Config") or {}).get("Image") or "").strip(),
-                "state": str((container.get("State") or {}).get("Status") or "").strip(),
-            }
-        )
+            config_files = [item.strip() for item in config_files_raw.split(",") if item.strip()]
+            key = (project_name, project_dir, ",".join(config_files))
+            project = projects.setdefault(
+                key,
+                {
+                    "project_name": project_name,
+                    "project_dir": project_dir,
+                    "config_files": config_files,
+                    "compose_env_files": [".env"] if Path(project_dir, ".env").exists() else [],
+                    "services": [],
+                },
+            )
+            project["services"].append(
+                {
+                    "service": str(labels.get("com.docker.compose.service") or "").strip(),
+                    "container_name": str(container.name or "").lstrip("/"),
+                    "image": str((container.attrs.get("Config") or {}).get("Image") or "").strip(),
+                    "state": str((container.attrs.get("State") or {}).get("Status") or "").strip(),
+                }
+            )
+    finally:
+        client.close()
 
     return sorted(
         (
@@ -283,7 +325,7 @@ def heartbeat_metadata(current_capabilities: list[str] | None = None) -> dict[st
         metadata["install_dir"] = AGENT_INSTALL_DIR
     if AGENT_COMPOSE_DIR:
         metadata["compose_dir"] = AGENT_COMPOSE_DIR
-    if shutil.which("docker"):
+    if docker_capabilities_available():
         metadata["docker"] = {
             "compose_projects": compose_projects_metadata(),
         }
@@ -400,7 +442,10 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     if not project_dir:
         return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
     compose_env_files = payload.get("compose_env_files", [])
-    command = ["docker", "compose"]
+    compose_command = compose_base_command()
+    if compose_command is None:
+        return {"exit_code": 1, "error": "docker compose command is not available", "stdout": ""}
+    command = compose_command[:]
     for env_file in compose_env_files:
         command.extend(["--env-file", env_file])
     rc_config, out_config = run_command(command + ["config"], cwd=project_dir)

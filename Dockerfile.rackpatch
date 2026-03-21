@@ -5,7 +5,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         curl \
-        docker.io \
+        docker-cli \
         docker-compose \
         git \
         jq \

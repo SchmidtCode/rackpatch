@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
-SOCKET_PATH = Path(os.environ.get("RACKPATCH_HOST_HELPER_SOCKET", "/run/rackpatch-host-helper.sock"))
+SOCKET_PATH = Path(
+    os.environ.get("RACKPATCH_HOST_HELPER_SOCKET", "/run/rackpatch-host-helper/rackpatch-host-helper.sock")
+)
 PACKAGE_CHECK_CMD = Path(
     os.environ.get("RACKPATCH_HOST_PACKAGE_CHECK_CMD", "/usr/local/libexec/rackpatch-package-check")
 )
