@@ -74,6 +74,13 @@ if [[ -z "${server_url}" || -z "${bootstrap_token}" ]]; then
   exit 1
 fi
 
+ensure_systemd_root() {
+  if [[ "${mode}" == "systemd" && ${EUID} -ne 0 ]]; then
+    echo "run as root for systemd mode" >&2
+    exit 1
+  fi
+}
+
 cleanup() {
   if [[ -n "${tmp_root}" && -d "${tmp_root}" ]]; then
     rm -rf "${tmp_root}"
@@ -247,6 +254,7 @@ EOF
 }
 
 default_install_source
+ensure_systemd_root
 
 if [[ "${mode}" != "compose" && "${mode}" != "container" && "${mode}" != "systemd" ]]; then
   echo "unsupported mode: ${mode}" >&2
@@ -309,7 +317,39 @@ mkdir -p "${install_dir}"
 rm -rf "${install_dir}/app"
 cp -R "${src_root}/app" "${install_dir}/app"
 cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/requirements-rackpatch.txt"
-python3 -m venv "${install_dir}/venv"
+ensure_python_venv() {
+  local venv_dir="$1"
+  local log_file
+  log_file="$(mktemp)"
+  if python3 -m venv "${venv_dir}" >"${log_file}" 2>&1; then
+    rm -f "${log_file}"
+    return 0
+  fi
+  if ! grep -q "ensurepip is not available" "${log_file}" || ! command -v apt-get >/dev/null 2>&1; then
+    cat "${log_file}" >&2
+    rm -f "${log_file}"
+    return 1
+  fi
+  local versioned_pkg
+  versioned_pkg="$(python3 - <<'PY'
+import sys
+print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")
+PY
+)"
+  apt-get update
+  if ! apt-get install -y "${versioned_pkg}"; then
+    apt-get install -y python3-venv
+  fi
+  rm -rf "${venv_dir}"
+  if ! python3 -m venv "${venv_dir}" >"${log_file}" 2>&1; then
+    cat "${log_file}" >&2
+    rm -f "${log_file}"
+    return 1
+  fi
+  rm -f "${log_file}"
+}
+
+ensure_python_venv "${install_dir}/venv"
 "${install_dir}/venv/bin/pip" install --upgrade pip
 "${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-rackpatch.txt"
 existing_helper_socket=""
