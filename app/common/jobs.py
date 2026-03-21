@@ -10,13 +10,22 @@ from common import config, db, job_catalog, notify, site
 
 
 PACKAGE_JOB_KINDS = {"package_check", "package_patch"}
-AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | {"docker_update"}
-APPROVAL_REQUIRED = {"docker_update", "package_patch", "rollback"}
+PROXMOX_JOB_KINDS = {"proxmox_patch", "proxmox_reboot"}
+HOST_HELPER_ACTION_CAPABILITIES = {
+    "package_check": "host-package-check",
+    "package_patch": "host-package-patch",
+    "proxmox_patch": "host-proxmox-patch",
+    "proxmox_reboot": "host-proxmox-reboot",
+}
+AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | PROXMOX_JOB_KINDS | {"docker_update"}
+APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
 VALID_EXECUTORS = {"worker", "agent", "auto"}
 CANCELLABLE_STATUSES = {"queued", "pending_approval"}
 AGENT_JOB_CAPABILITIES = {
     "package_check": {"host-package-check"},
     "package_patch": {"host-package-patch"},
+    "proxmox_patch": {"host-proxmox-patch"},
+    "proxmox_reboot": {"host-proxmox-reboot"},
     "docker_update": {"docker"},
 }
 RETIRED_WORKER_CONTROL_JOB_KINDS = {
@@ -100,10 +109,9 @@ def _agent_capabilities(agent_id: str | None) -> set[str]:
     selected.update(str(value) for value in metadata_capabilities if str(value).strip())
     host_maintenance = metadata.get("host_maintenance") or {}
     actions = {str(value) for value in host_maintenance.get("actions", []) if str(value).strip()}
-    if "package_check" in actions:
-        selected.add("host-package-check")
-    if "package_patch" in actions:
-        selected.add("host-package-patch")
+    for action, capability in HOST_HELPER_ACTION_CAPABILITIES.items():
+        if action in actions:
+            selected.add(capability)
     return selected
 
 
@@ -167,6 +175,28 @@ def _resolve_package_targets(kind: str, target_ref: str, payload: dict[str, Any]
     return selected
 
 
+def _proxmox_scope_hosts(selector: str) -> list[str]:
+    value = str(selector).strip()
+    if not value:
+        return []
+    if value in {"all", "proxmox_nodes"}:
+        return site.group_hosts("proxmox_nodes")
+    return [value]
+
+
+def _resolve_proxmox_targets(target_ref: str, payload: dict[str, Any]) -> list[str]:
+    selectors = _split_targets(payload.get("limit"))
+    if not selectors:
+        selectors = _split_targets(target_ref)
+
+    selected: list[str] = []
+    for selector in selectors:
+        for host_name in _proxmox_scope_hosts(selector):
+            if host_name not in selected:
+                selected.append(host_name)
+    return selected
+
+
 def _resolve_docker_update_targets(target_ref: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
     requested = _dedupe(_split_targets(payload.get("selected_stacks")))
     stacks = site.load_stacks()
@@ -198,7 +228,7 @@ def _package_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) ->
     if not host:
         return f"{target_ref} is not present in inventory."
     if str(host.get("group")) == "proxmox_nodes":
-        return "Package helper jobs are not available for proxmox_nodes in the agent-first runtime."
+        return "Use the helper-backed Proxmox patch or Proxmox reboot actions for proxmox_nodes."
     if kind != "package_patch":
         return None
     allow_manual = bool(payload.get("allow_manual_guests", False))
@@ -210,6 +240,19 @@ def _package_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) ->
     if bool(host.get("dns_critical")) and not bool(payload.get("dry_run", False)) and not allow_dns_anytime:
         if _current_maintenance_hour() >= 7:
             return "DNS-critical host patching is restricted to the early-morning maintenance window."
+    return None
+
+
+def _proxmox_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -> str | None:
+    host = _site_host(target_ref)
+    if not host:
+        return f"{target_ref} is not present in inventory."
+    if str(host.get("group")) != "proxmox_nodes":
+        return f"{kind} is only available for proxmox_nodes."
+    if kind == "proxmox_reboot":
+        reboot_mode = str(payload.get("reboot_mode") or "soft").strip() or "soft"
+        if reboot_mode not in {"soft", "hard"}:
+            return "reboot_mode must be soft or hard."
     return None
 
 
@@ -244,10 +287,20 @@ def _rollback_blocker(target_ref: str) -> str | None:
     return "Remote rollback is not supported in the agent-first runtime."
 
 
+def _job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -> str | None:
+    if kind in PACKAGE_JOB_KINDS:
+        return _package_job_blocker(kind, target_ref, payload)
+    if kind in PROXMOX_JOB_KINDS:
+        return _proxmox_job_blocker(kind, target_ref, payload)
+    if kind == "docker_update":
+        return _docker_update_blocker(target_ref, payload)
+    return None
+
+
 def _agent_capability_error(kind: str, target_ref: str, payload: dict[str, Any], agent_id: str | None) -> str | None:
     if kind not in AGENT_JOB_KINDS:
         return None
-    blocker = _package_job_blocker(kind, target_ref, payload) if kind in PACKAGE_JOB_KINDS else _docker_update_blocker(target_ref, payload)
+    blocker = _job_blocker(kind, target_ref, payload)
     if blocker:
         return blocker
     if not agent_id:
@@ -419,6 +472,77 @@ def _create_package_jobs(
     return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
 
 
+def _create_proxmox_jobs(
+    kind: str,
+    target_type: str,
+    target_ref: str,
+    payload: dict[str, Any],
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    executor = str(payload.get("executor", "agent")).strip() or "agent"
+    if executor == "worker":
+        raise ValueError(f"{kind} no longer supports the worker executor; enable the matching Proxmox helper actions instead")
+    if executor not in VALID_EXECUTORS:
+        allowed = ", ".join(sorted(VALID_EXECUTORS))
+        raise ValueError(f"invalid executor {executor!r}; expected one of: {allowed}")
+
+    targets = _resolve_proxmox_targets(target_ref, payload)
+    if not targets:
+        raise ValueError("no Proxmox nodes were selected")
+
+    requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
+    if not bool(payload.get("dry_run", False)) and len(targets) > 1 and not requires_approval:
+        raise ValueError(
+            "Live Proxmox patch and reboot across multiple nodes must stay approval-gated or be queued one node at a time."
+        )
+    status = "pending_approval" if requires_approval else "queued"
+    approval_status = "pending" if requires_approval else "not_required"
+    queued_jobs: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for host_name in targets:
+        host = _site_host(host_name) or {}
+        child_payload = deepcopy(payload)
+        child_payload.pop("target_agent_id", None)
+        child_payload["limit"] = host_name
+        child_payload["proxmox_node_name"] = str(host.get("proxmox_node_name") or host_name)
+        child_payload["guest_order"] = [
+            str(item)
+            for item in (host.get("soft_reboot_guest_order") or host.get("guest_ids") or [])
+            if str(item).strip()
+        ]
+        if kind == "proxmox_reboot":
+            child_payload["reboot_mode"] = str(payload.get("reboot_mode") or "soft").strip() or "soft"
+        agent_id = resolve_agent_id(target_type, host_name, child_payload)
+        error = _agent_capability_error(kind, host_name, child_payload, agent_id)
+        if error:
+            skipped.append({"target_ref": host_name, "reason": error})
+            continue
+        queued_jobs.append(
+            _insert_job(
+                kind=kind,
+                status=status,
+                source=source,
+                target_type=target_type,
+                target_ref=host_name,
+                executor="agent",
+                payload=child_payload,
+                requested_by=requested_by,
+                requires_approval=requires_approval,
+                approval_status=approval_status,
+                target_agent_id=agent_id,
+            )
+        )
+
+    if not queued_jobs:
+        reasons = "; ".join(f"{item['target_ref']}: {item['reason']}" for item in skipped[:4])
+        raise ValueError(reasons or f"no Proxmox nodes were eligible for {kind}")
+    if len(queued_jobs) == 1 and not skipped:
+        return queued_jobs[0]
+    return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
+
+
 def _create_docker_update_jobs(
     kind: str,
     target_type: str,
@@ -499,6 +623,8 @@ def create_job(
         raise ValueError(f"{kind} jobs must target {expected_target_type}, not {target_type}")
     if kind in PACKAGE_JOB_KINDS:
         return _create_package_jobs(kind, target_type, target_ref, payload, requested_by, source)
+    if kind in PROXMOX_JOB_KINDS:
+        return _create_proxmox_jobs(kind, target_type, target_ref, payload, requested_by, source)
     if kind == "docker_update":
         return _create_docker_update_jobs(kind, target_type, target_ref, payload, requested_by, source)
     if kind == "rollback":

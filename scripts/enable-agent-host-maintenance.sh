@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  enable-agent-host-maintenance.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--socket-path PATH] [--helper-user USER] [--install-source PATH_OR_REPO] [--install-ref REF]
+  enable-agent-host-maintenance.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--socket-path PATH] [--helper-user USER] [--preset packages|proxmox|all] [--allow-actions action1,action2] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -15,9 +15,12 @@ install_dir="/opt/rackpatch-agent"
 helper_dir="/opt/rackpatch-host-helper"
 socket_path="/run/rackpatch-host-helper.sock"
 helper_user="rackpatch-agent"
+preset="packages"
+allow_actions=""
 install_source=""
 install_ref=""
 tmp_root=""
+selected_actions=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +42,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --helper-user)
       helper_user="$2"
+      shift 2
+      ;;
+    --preset)
+      preset="$2"
+      shift 2
+      ;;
+    --allow-actions)
+      allow_actions="$2"
       shift 2
       ;;
     --install-source)
@@ -85,6 +96,61 @@ normalize_socket_path() {
 
 socket_dir_path() {
   dirname "${socket_path}"
+}
+
+resolve_actions() {
+  local raw_actions=""
+  case "${preset}" in
+    packages)
+      raw_actions="package_check,package_patch"
+      ;;
+    proxmox)
+      raw_actions="proxmox_patch,proxmox_reboot"
+      ;;
+    all|packages+proxmox)
+      raw_actions="package_check,package_patch,proxmox_patch,proxmox_reboot"
+      ;;
+    *)
+      echo "unsupported preset: ${preset}" >&2
+      exit 1
+      ;;
+  esac
+  if [[ -n "${allow_actions}" ]]; then
+    raw_actions="${allow_actions}"
+  fi
+
+  local item action
+  local -A seen=()
+  IFS=',' read -r -a requested_actions <<< "${raw_actions}"
+  selected_actions=()
+  for item in "${requested_actions[@]}"; do
+    action="${item//[[:space:]]/}"
+    if [[ -z "${action}" ]]; then
+      continue
+    fi
+    case "${action}" in
+      package_check|package_patch|proxmox_patch|proxmox_reboot)
+        ;;
+      *)
+        echo "unsupported host-maintenance action: ${action}" >&2
+        exit 1
+        ;;
+    esac
+    if [[ -n "${seen[$action]+x}" ]]; then
+      continue
+    fi
+    seen["${action}"]=1
+    selected_actions+=("${action}")
+  done
+  if [[ ${#selected_actions[@]} -eq 0 ]]; then
+    echo "no host-maintenance actions selected" >&2
+    exit 1
+  fi
+}
+
+selected_actions_csv() {
+  local IFS=,
+  printf '%s' "${selected_actions[*]}"
 }
 
 if [[ -z "${install_source}" ]]; then
@@ -134,22 +200,52 @@ install_helper_files() {
   install -m 0755 "${src_root}/scripts/host-maintenance/helper_server.py" "${helper_dir}/helper_server.py"
   install -m 0755 "${src_root}/scripts/host-maintenance/package_check.py" /usr/local/libexec/rackpatch-package-check
   install -m 0755 "${src_root}/scripts/host-maintenance/package_patch.py" /usr/local/libexec/rackpatch-package-patch
-  chown -R root:root "${helper_dir}" /usr/local/libexec/rackpatch-package-check /usr/local/libexec/rackpatch-package-patch
+  install -m 0755 "${src_root}/scripts/host-maintenance/proxmox_patch.py" /usr/local/libexec/rackpatch-proxmox-patch
+  install -m 0755 "${src_root}/scripts/host-maintenance/proxmox_reboot.py" /usr/local/libexec/rackpatch-proxmox-reboot
+  chown -R root:root \
+    "${helper_dir}" \
+    /usr/local/libexec/rackpatch-package-check \
+    /usr/local/libexec/rackpatch-package-patch \
+    /usr/local/libexec/rackpatch-proxmox-patch \
+    /usr/local/libexec/rackpatch-proxmox-reboot
 }
 
 write_helper_env() {
   cat > /etc/default/rackpatch-host-helper <<EOF
 RACKPATCH_HOST_HELPER_SOCKET=${socket_path}
+RACKPATCH_HOST_HELPER_ACTIONS=$(selected_actions_csv)
 RACKPATCH_HOST_PACKAGE_CHECK_CMD=/usr/local/libexec/rackpatch-package-check
 RACKPATCH_HOST_PACKAGE_PATCH_CMD=/usr/local/libexec/rackpatch-package-patch
+RACKPATCH_HOST_PROXMOX_PATCH_CMD=/usr/local/libexec/rackpatch-proxmox-patch
+RACKPATCH_HOST_PROXMOX_REBOOT_CMD=/usr/local/libexec/rackpatch-proxmox-reboot
 RACKPATCH_HOST_HELPER_SOCKET_MODE=660
 EOF
 }
 
 write_sudoers() {
+  local commands=()
+  local action command_csv
+  for action in "${selected_actions[@]}"; do
+    case "${action}" in
+      package_check)
+        commands+=("/usr/local/libexec/rackpatch-package-check")
+        ;;
+      package_patch)
+        commands+=("/usr/local/libexec/rackpatch-package-patch")
+        ;;
+      proxmox_patch)
+        commands+=("/usr/local/libexec/rackpatch-proxmox-patch")
+        ;;
+      proxmox_reboot)
+        commands+=("/usr/local/libexec/rackpatch-proxmox-reboot")
+        ;;
+    esac
+  done
+  local IFS=,
+  command_csv="${commands[*]}"
   cat > /etc/sudoers.d/rackpatch-agent-maintenance <<EOF
 User_Alias RACKPATCH_HELPER = ${helper_user}
-Cmnd_Alias RACKPATCH_HELPER_CMDS = /usr/local/libexec/rackpatch-package-check, /usr/local/libexec/rackpatch-package-patch
+Cmnd_Alias RACKPATCH_HELPER_CMDS = ${command_csv}
 
 Defaults:RACKPATCH_HELPER !requiretty
 Defaults!RACKPATCH_HELPER_CMDS env_reset,secure_path=/usr/sbin:/usr/bin:/sbin:/bin
@@ -246,6 +342,7 @@ configure_systemd_agent() {
 }
 
 normalize_socket_path
+resolve_actions
 create_helper_user
 install_helper_files
 write_helper_env
@@ -268,4 +365,4 @@ case "${mode}" in
     ;;
 esac
 
-echo "host maintenance helper enabled for ${mode} mode"
+echo "host maintenance helper enabled for ${mode} mode (actions: $(selected_actions_csv))"

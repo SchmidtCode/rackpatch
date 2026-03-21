@@ -16,16 +16,54 @@ PACKAGE_CHECK_CMD = Path(
 PACKAGE_PATCH_CMD = Path(
     os.environ.get("RACKPATCH_HOST_PACKAGE_PATCH_CMD", "/usr/local/libexec/rackpatch-package-patch")
 )
+PROXMOX_PATCH_CMD = Path(
+    os.environ.get("RACKPATCH_HOST_PROXMOX_PATCH_CMD", "/usr/local/libexec/rackpatch-proxmox-patch")
+)
+PROXMOX_REBOOT_CMD = Path(
+    os.environ.get("RACKPATCH_HOST_PROXMOX_REBOOT_CMD", "/usr/local/libexec/rackpatch-proxmox-reboot")
+)
 SOCKET_MODE = int(os.environ.get("RACKPATCH_HOST_HELPER_SOCKET_MODE", "660"), 8)
+DEFAULT_ALLOWED_ACTIONS = ("package_check", "package_patch")
+
+
+def _allowed_actions() -> set[str]:
+    raw = os.environ.get("RACKPATCH_HOST_HELPER_ACTIONS", ",".join(DEFAULT_ALLOWED_ACTIONS))
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def _available_actions() -> dict[str, Path]:
+    allowed = _allowed_actions()
+    supported = {
+        "package_check": PACKAGE_CHECK_CMD,
+        "package_patch": PACKAGE_PATCH_CMD,
+        "proxmox_patch": PROXMOX_PATCH_CMD,
+        "proxmox_reboot": PROXMOX_REBOOT_CMD,
+    }
     actions: dict[str, Path] = {}
-    if PACKAGE_CHECK_CMD.is_file() and os.access(PACKAGE_CHECK_CMD, os.X_OK):
-        actions["package_check"] = PACKAGE_CHECK_CMD
-    if PACKAGE_PATCH_CMD.is_file() and os.access(PACKAGE_PATCH_CMD, os.X_OK):
-        actions["package_patch"] = PACKAGE_PATCH_CMD
+    for name, command in supported.items():
+        if name not in allowed:
+            continue
+        if command.is_file() and os.access(command, os.X_OK):
+            actions[name] = command
     return actions
+
+
+def _normalize_guest_order(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        values = raw
+    else:
+        values = str(raw).split(",")
+    guest_order: list[str] = []
+    for value in values:
+        guest_id = str(value).strip()
+        if not guest_id:
+            continue
+        if not guest_id.isdigit():
+            raise ValueError("guest_order entries must be numeric VMIDs")
+        guest_order.append(guest_id)
+    return guest_order
 
 
 def _response(payload: dict[str, Any]) -> bytes:
@@ -100,13 +138,28 @@ class Handler(socketserver.StreamRequestHandler):
             return
 
         command = ["sudo", "-n", str(actions[action])]
-        if action == "package_patch":
+        if action in {"package_patch", "proxmox_patch", "proxmox_reboot"}:
             dry_run = payload.get("dry_run", False)
             if not isinstance(dry_run, bool):
                 self.wfile.write(_response({"ok": False, "error": "dry_run must be a boolean"}))
                 return
             if dry_run:
                 command.append("--dry-run")
+        if action == "proxmox_reboot":
+            reboot_mode = str(payload.get("reboot_mode") or "soft").strip() or "soft"
+            if reboot_mode not in {"soft", "hard"}:
+                self.wfile.write(_response({"ok": False, "error": "reboot_mode must be soft or hard"}))
+                return
+            command.extend(["--reboot-mode", reboot_mode])
+            try:
+                guest_order = _normalize_guest_order(
+                    payload.get("guest_order") or payload.get("soft_reboot_guest_order") or payload.get("guest_ids")
+                )
+            except ValueError as exc:
+                self.wfile.write(_response({"ok": False, "error": str(exc)}))
+                return
+            if guest_order:
+                command.extend(["--guest-order", ",".join(guest_order)])
 
         self.wfile.write(_response(_execute(command)))
 

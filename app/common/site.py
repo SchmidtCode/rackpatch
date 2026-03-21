@@ -181,4 +181,17 @@ def default_schedules() -> list[dict[str, Any]]:
                 "notify": True,
             },
         },
+        {
+            "name": "Proxmox Node Patch Approval",
+            "kind": "proxmox_patch",
+            "cron_expr": windows.get("proxmox_patch_approval", windows.get("proxmox_nodes", "30 4 * * 0")),
+            "payload": {
+                "executor": "agent",
+                "target_ref": "proxmox_nodes",
+                "limit": "proxmox_nodes",
+                "dry_run": False,
+                "requires_approval": True,
+                "notify": True,
+            },
+        },
     ]

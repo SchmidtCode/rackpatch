@@ -58,6 +58,7 @@ def build_agent_host_maintenance_command(
     *,
     compose_dir: str = "",
     install_dir: str = "",
+    preset: str = "packages",
 ) -> str:
     script_url = config.derive_public_script_url(
         public_settings["repo_url"],
@@ -82,6 +83,8 @@ def build_agent_host_maintenance_command(
         "--",
         "--mode",
         mode,
+        "--preset",
+        preset,
         "--install-source",
         public_settings["repo_url"],
         "--install-ref",

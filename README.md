@@ -1,6 +1,6 @@
 # rackpatch
 
-rackpatch is a compose-first homelab maintenance appliance for Docker stacks and helper-gated Debian or Ubuntu package maintenance.
+rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
 Version in this repo: `v0.3.2`
 
@@ -9,6 +9,7 @@ Version in this repo: `v0.3.2`
 - Tracks Docker stacks from your site catalog and discovered compose projects.
 - Uses enrolled agents to discover compose projects and apply Docker stack updates.
 - Handles guest package checks and guest patching through the limited host-maintenance helper.
+- Can expose helper-gated Proxmox node patch and reboot actions when you explicitly enable them on those nodes.
 - Provides a web UI, Telegram control surface, generated install/update commands, and machine-readable API context.
 - Surfaces release status for the control plane and enrolled agents when the public repo points at GitHub.
 
@@ -143,12 +144,13 @@ Agent packaging modes:
 
 Container-mode updates explicitly rebuild `rackpatch-agent:local` before redeploying, so agent code changes are not skipped during updates.
 
-Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host package maintenance, run the dedicated helper enable script after the agent is installed.
+Host maintenance is a separate opt-in step. The base agent install stays focused on enrollment and unprivileged operations. If you want limited host maintenance, run the dedicated helper enable script after the agent is installed and choose the preset or action list you want that node to expose.
 
 If the rackpatch control-plane host is also an inventory host, the main stack can run an optional self-agent with `docker compose --profile self-agent up -d --build agent`. Set `RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN` and `RACKPATCH_SELF_AGENT_NAME` in `.env` so that self-agent enrolls as the matching inventory host, for example `core-vm`.
 
 The web UI treats package check and package patch as helper-gated actions. Hosts without the limited host-maintenance helper stay visible, but their package actions and package-job picker entries are greyed out until that access is enabled.
 Package maintenance no longer falls back to the legacy worker or SSH path. Multi-host package requests fan out into one helper-backed agent job per eligible host.
+Proxmox patch and Proxmox reboot are helper-gated too. Multi-node live Proxmox actions stay approval-gated so you can release nodes deliberately instead of having agents change several nodes at once.
 Docker updates no longer fall back to the legacy worker path either. Live updates require an enrolled Docker-capable agent for each selected stack.
 
 Example container install:
@@ -171,17 +173,31 @@ curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.2/script
   --ref v0.3.2
 ```
 
-Example host-maintenance enablement:
+Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
   --mode compose \
+  --preset packages \
   --compose-dir /srv/compose/rackpatch-agent \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
   --install-ref main
 ```
 
-The helper exposes only approved host-maintenance actions and is intended for package check and package patch in this rollout.
+Example host-maintenance enablement for Proxmox nodes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+  --mode systemd \
+  --preset proxmox \
+  --install-source https://github.com/SchmidtCode/rackpatch.git \
+  --install-ref main
+```
+
+If you want a custom mix, pass `--allow-actions package_check,package_patch,proxmox_patch,proxmox_reboot` with only the actions you want that node to advertise.
+
+The helper exposes only approved host-maintenance actions. Package actions remain separate from Proxmox patch and reboot, and the agent advertises only the capabilities that are explicitly enabled on that node.
+For Proxmox soft reboots, rackpatch uses `soft_reboot_guest_order` from inventory and falls back to `guest_ids` when that order is not set.
 
 `Patch Live` remains grey for helper-backed hosts that still require snapshot-before-patch. In the current rollout, helper-backed live patching only becomes eligible when the host advertises helper access and its inventory policy allows live patching without a pre-patch snapshot, which means `snapshot_class: none` for that host.
 
@@ -189,11 +205,13 @@ The helper exposes only approved host-maintenance actions and is intended for pa
 
 - Base agent installs do not enable privileged host maintenance by default.
 - Privileged host maintenance is enabled only by the dedicated helper setup step.
-- The helper is limited to named maintenance actions such as package check and package patch.
+- The helper is limited to named maintenance actions such as package check, package patch, Proxmox patch, and Proxmox reboot.
 - The helper does not accept arbitrary shell, free-form commands, package names, or paths from the control plane.
 - The control-plane compose stack does not mount host SSH directories into the API or worker containers.
 - Package check and package patch in the web UI are intentionally disabled on hosts that do not advertise the matching helper-backed capability.
+- Proxmox patch and Proxmox reboot in the web UI are intentionally disabled on nodes that do not advertise the matching helper-backed capability.
 - Package maintenance is agent-only now; if a host cannot satisfy helper or policy requirements, rackpatch rejects or skips that host instead of falling back to worker or SSH execution.
+- Multi-node live Proxmox helper actions are intentionally kept approval-gated.
 - Every future privileged action must have:
   a named helper action, a dedicated root-owned wrapper, an explicit capability, and UI disclosure.
 - Docker socket access is still a separate trust-sensitive capability and will be hardened in a later phase.

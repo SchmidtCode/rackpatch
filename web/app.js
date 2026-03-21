@@ -1000,11 +1000,15 @@ function renderHosts() {
       const maintenance = hostMaintenanceInfo(agent);
       const agentCell = agent
         ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span><span class="subline">${escapeHtml(maintenance.detail)}</span>`
-        : `${statusBadge(runtime.status || "No agent")}<span class="subline">${escapeHtml(runtime.detail || "Agent enrollment is required for Docker updates and helper-backed package jobs.")}</span>`;
+        : `${statusBadge(runtime.status || "No agent")}<span class="subline">${escapeHtml(runtime.detail || "Agent enrollment is required for Docker updates and helper-backed host jobs.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
       const packageCheckAccess = getNamedHostAccess(item, "package_check", "package_check");
       const packagePatchDryAccess = getNamedHostAccess(item, "package_patch_dry_run", "package_patch");
       const packagePatchLiveAccess = getNamedHostAccess(item, "package_patch_live", "package_patch");
+      const proxmoxPatchDryAccess = getNamedHostAccess(item, "proxmox_patch_dry_run", "proxmox_patch");
+      const proxmoxPatchLiveAccess = getNamedHostAccess(item, "proxmox_patch_live", "proxmox_patch");
+      const proxmoxRebootDryAccess = getNamedHostAccess(item, "proxmox_reboot_dry_run", "proxmox_reboot");
+      const proxmoxRebootLiveAccess = getNamedHostAccess(item, "proxmox_reboot_live", "proxmox_reboot");
       const packageActionNote = packagePatchLiveAccess.eligible
         ? "Package actions limited to approved host-maintenance helper access."
         : packagePatchDryAccess.eligible
@@ -1012,8 +1016,33 @@ function renderHosts() {
           : packageCheckAccess.eligible
             ? "Package checks are enabled. Package patch access is not enabled on this host."
             : "Package jobs require the limited host-maintenance helper on this host.";
+      const proxmoxActionNote = proxmoxRebootLiveAccess.eligible
+        ? "Proxmox patch and reboot are enabled through approved helper actions. Multi-node live runs stay approval-gated."
+        : proxmoxPatchLiveAccess.eligible
+          ? "Proxmox patch is enabled. Reboot helper access is not enabled on this node."
+          : proxmoxPatchDryAccess.eligible || proxmoxRebootDryAccess.eligible
+            ? "Dry-run Proxmox helper access is enabled. Multi-node live actions stay approval-gated."
+            : "Proxmox jobs require the limited Proxmox helper actions on this node.";
       const actionButtons = isProxmoxNode
-        ? `<span class="subline">No package actions are exposed for proxmox_nodes in the agent-first UI.</span>`
+        ? `
+            <button class="secondary" data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
+              !proxmoxPatchDryAccess.eligible,
+              proxmoxPatchDryAccess.detail
+            )}>Patch Dry</button>
+            <button data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="false"${buttonStateAttrs(
+              !proxmoxPatchLiveAccess.eligible,
+              proxmoxPatchLiveAccess.detail
+            )}>Patch Live</button>
+            <button class="secondary" data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="true" data-reboot-mode="soft"${buttonStateAttrs(
+              !proxmoxRebootDryAccess.eligible,
+              proxmoxRebootDryAccess.detail
+            )}>Reboot Dry</button>
+            <button data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="false" data-reboot-mode="soft"${buttonStateAttrs(
+              !proxmoxRebootLiveAccess.eligible,
+              proxmoxRebootLiveAccess.detail
+            )}>Reboot Live</button>
+            <span class="subline">${escapeHtml(proxmoxActionNote)}</span>
+          `
         : `
             <button class="secondary" data-host-kind="package_check" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
               !packageCheckAccess.eligible,
@@ -1270,6 +1299,8 @@ function renderSettings() {
     "/approve <job-id>",
     "/update <stack|all> [dry|live]",
     "/patch <host|all> [dry|live]",
+    "/proxmox-patch <host|proxmox_nodes> [dry|live]",
+    "/proxmox-reboot <host|proxmox_nodes> [dry|live]",
     "/backup <volume>",
     "/rollback <stack>",
     "/schedules",
@@ -1779,6 +1810,12 @@ appScreen.addEventListener("click", async (event) => {
     }
     if (kind === "package_check") {
       payload.hosts = [hostName];
+    }
+    if (kind.startsWith("proxmox")) {
+      payload.limit = hostName;
+    }
+    if (kind === "proxmox_reboot") {
+      payload.reboot_mode = hostButton.dataset.rebootMode || "soft";
     }
     await queuePreset(kind, "host", hostName, payload);
     return;

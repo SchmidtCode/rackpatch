@@ -324,6 +324,33 @@ def handle_patch(target: str, mode: str) -> str:
     return queue_job_message(result, f"package patch ({'dry-run' if dry_run else 'live'})", target)
 
 
+def handle_proxmox_patch(target: str, mode: str) -> str:
+    dry_run = mode != "live"
+    payload: dict[str, Any] = {
+        "executor": "agent",
+        "limit": target,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        payload["requires_approval"] = False
+    result = queue_job("proxmox_patch", "host", target, payload)
+    return queue_job_message(result, f"Proxmox patch ({'dry-run' if dry_run else 'live'})", target)
+
+
+def handle_proxmox_reboot(target: str, mode: str) -> str:
+    dry_run = mode != "live"
+    payload: dict[str, Any] = {
+        "executor": "agent",
+        "limit": target,
+        "dry_run": dry_run,
+        "reboot_mode": "soft",
+    }
+    if dry_run:
+        payload["requires_approval"] = False
+    result = queue_job("proxmox_reboot", "host", target, payload)
+    return queue_job_message(result, f"Proxmox reboot ({'dry-run' if dry_run else 'live'})", target)
+
+
 def handle_backup(target: str) -> str:
     result = queue_job(
         "backup",
@@ -384,6 +411,8 @@ def help_text() -> str:
             "/approve <job-id>",
             "/update <stack|all> [dry|live]",
             "/patch <host|all> [dry|live]",
+            "/proxmox-patch <host|proxmox_nodes> [dry|live]",
+            "/proxmox-reboot <host|proxmox_nodes> [dry|live]",
             "/backup <volume>",
             "/rollback <stack>",
             "/schedules",
@@ -429,6 +458,14 @@ def handle_command(text: str) -> str:
         if len(args) not in {1, 2}:
             raise ValueError("usage: /patch <host|all> [dry|live]")
         return handle_patch(args[0], args[1].lower() if len(args) == 2 else "dry")
+    if command == "/proxmox-patch":
+        if len(args) not in {1, 2}:
+            raise ValueError("usage: /proxmox-patch <host|proxmox_nodes> [dry|live]")
+        return handle_proxmox_patch(args[0], args[1].lower() if len(args) == 2 else "dry")
+    if command == "/proxmox-reboot":
+        if len(args) not in {1, 2}:
+            raise ValueError("usage: /proxmox-reboot <host|proxmox_nodes> [dry|live]")
+        return handle_proxmox_reboot(args[0], args[1].lower() if len(args) == 2 else "dry")
     if command == "/backup":
         if len(args) != 1:
             raise ValueError("usage: /backup <volume>")
