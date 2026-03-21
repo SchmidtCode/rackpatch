@@ -45,15 +45,11 @@ def enqueue_schedules() -> None:
     for row in due:
         payload = dict(row["payload"] or {})
         payload.setdefault("executor", "auto")
-        if row["kind"] == "docker_discover":
-            payload.setdefault("requires_approval", False)
         if row["kind"] == "docker_update" and payload.get("window") == "auto-windowed":
             payload.setdefault("requires_approval", False)
 
-        target_type = "stack" if row["kind"] in {"docker_discover", "docker_update", "rollback"} else "host"
+        target_type = "stack" if row["kind"] in {"docker_update", "rollback"} else "host"
         target_ref = payload.get("target_ref", "all")
-        if row["kind"] in {"proxmox_patch", "proxmox_reboot"}:
-            target_ref = payload.get("limit", "proxmox_nodes")
 
         try:
             jobs.create_job(
@@ -143,10 +139,13 @@ def execute_job(job: dict) -> None:
 def main() -> int:
     db.init_db()
     retired = jobs.retire_legacy_package_jobs()
+    retired_control = jobs.retire_legacy_worker_control_jobs()
     recovered = jobs.recover_stale_worker_jobs()
     print("rackpatch-worker started", flush=True)
     if retired:
         print(f"rackpatch-worker retired {len(retired)} legacy worker package job(s)", flush=True)
+    if retired_control:
+        print(f"rackpatch-worker retired {len(retired_control)} legacy worker host-control job(s)", flush=True)
     if recovered:
         print(f"rackpatch-worker recovered {len(recovered)} stale worker job(s)", flush=True)
     schedule_tick = 0.0

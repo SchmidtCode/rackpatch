@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-rackpatch.txt
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-rackpatch.txt ansible-core==2.18.3
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Run repository validation
+        run: make validate
+
+  docker-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: rackpatch
+            dockerfile: Dockerfile.rackpatch
+          - image_name: rackpatch-agent
+            dockerfile: Dockerfile.agent
+          - image_name: rackpatch-web
+            dockerfile: Dockerfile.web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image_name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: rackpatch-ci/${{ matrix.image_name }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

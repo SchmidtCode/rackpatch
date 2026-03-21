@@ -9,7 +9,6 @@ RUN apt-get update \
         docker-compose \
         git \
         jq \
-        openssh-client \
         rsync \
         sudo \
     && rm -rf /var/lib/apt/lists/*
@@ -24,7 +23,6 @@ RUN pip install --no-cache-dir -r /tmp/requirements-rackpatch.txt \
 WORKDIR /workspace
 
 COPY app /opt/rackpatch-app
-COPY scripts/prepare_ssh_dir.sh /usr/local/bin/prepare_ssh_dir.sh
 
 ENV PYTHONPATH=/opt/rackpatch-app \
     PYTHONUNBUFFERED=1

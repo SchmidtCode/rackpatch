@@ -28,6 +28,7 @@ if config.CORS_ORIGINS:
 def on_startup() -> None:
     db.init_db()
     jobs.retire_legacy_package_jobs()
+    jobs.retire_legacy_worker_control_jobs()
 
 
 def _json_body(value: Any) -> dict[str, Any]:
@@ -85,7 +86,7 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
         else:
             detail = str(
                 host_maintenance.get("detail")
-                or "Agent enrolled. UI package jobs stay greyed out until the host maintenance helper is enabled."
+                or "Agent enrolled. UI helper-gated host jobs stay greyed out until the host maintenance helper is enabled."
             )
         return {
             "status": str(agent.get("status") or "unknown"),
@@ -97,8 +98,8 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
             "detail": "Rackpatch control plane host. Agent optional.",
         }
     return {
-        "status": "Worker-routed",
-        "detail": "No agent enrolled. UI package jobs need the host maintenance helper. Worker and inventory jobs still available for other workflows.",
+        "status": "No agent",
+        "detail": "No agent enrolled. Docker updates require an enrolled Docker-capable agent, and helper-gated package or Proxmox jobs require the limited host-maintenance helper.",
     }
 
 
@@ -294,6 +295,10 @@ def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
                     "package_check": jobs.host_job_access("package_check", host["name"]),
                     "package_patch_dry_run": jobs.host_job_access("package_patch", host["name"], {"dry_run": True}),
                     "package_patch_live": jobs.host_job_access("package_patch", host["name"], {"dry_run": False}),
+                    "proxmox_patch_dry_run": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": True}),
+                    "proxmox_patch_live": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": False}),
+                    "proxmox_reboot_dry_run": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": True}),
+                    "proxmox_reboot_live": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": False}),
                 },
             }
         )

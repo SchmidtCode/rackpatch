@@ -37,6 +37,8 @@ HOST_HELPER_SOCKET = config.env("RACKPATCH_HOST_HELPER_SOCKET", "/run/rackpatch-
 HOST_MAINTENANCE_CAPABILITIES = {
     "package_check": "host-package-check",
     "package_patch": "host-package-patch",
+    "proxmox_patch": "host-proxmox-patch",
+    "proxmox_reboot": "host-proxmox-reboot",
 }
 
 _compose_discovery_cache: dict[str, Any] = {
@@ -139,8 +141,6 @@ def capabilities() -> list[str]:
         if action not in helper_actions:
             continue
         caps.add(capability)
-    if Path("/etc/pve").exists():
-        caps.add("proxmox")
     return sorted(caps)
 
 
@@ -360,8 +360,8 @@ def run_command(command: list[str], cwd: str | None = None) -> tuple[int, str]:
     return process.wait(), "\n".join(output)
 
 
-def _result_from_helper(action: str, **payload: Any) -> dict[str, Any]:
-    response = _helper_request({"action": action, **payload}, timeout=120.0)
+def _result_from_helper(action: str, *, timeout: float = 120.0, **payload: Any) -> dict[str, Any]:
+    response = _helper_request({"action": action, **payload}, timeout=timeout)
     if not response.get("ok"):
         message = str(response.get("error") or "host maintenance helper request failed")
         stdout = str(response.get("stdout") or message)
@@ -377,11 +377,28 @@ def check_packages() -> dict[str, Any]:
 
 
 def patch_packages(payload: dict[str, Any]) -> dict[str, Any]:
-    return _result_from_helper("package_patch", dry_run=bool(payload.get("dry_run", False)))
+    return _result_from_helper("package_patch", timeout=3600.0, dry_run=bool(payload.get("dry_run", False)))
+
+
+def patch_proxmox(payload: dict[str, Any]) -> dict[str, Any]:
+    return _result_from_helper("proxmox_patch", timeout=7200.0, dry_run=bool(payload.get("dry_run", False)))
+
+
+def reboot_proxmox(payload: dict[str, Any]) -> dict[str, Any]:
+    guest_order = payload.get("guest_order")
+    return _result_from_helper(
+        "proxmox_reboot",
+        timeout=120.0,
+        dry_run=bool(payload.get("dry_run", False)),
+        reboot_mode=str(payload.get("reboot_mode") or "soft"),
+        guest_order=list(guest_order) if isinstance(guest_order, list) else [],
+    )
 
 
 def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
-    project_dir = payload["project_dir"]
+    project_dir = str(payload.get("project_dir") or "").strip()
+    if not project_dir:
+        return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
     compose_env_files = payload.get("compose_env_files", [])
     command = ["docker", "compose"]
     for env_file in compose_env_files:
@@ -389,6 +406,16 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     rc_config, out_config = run_command(command + ["config"], cwd=project_dir)
     if rc_config != 0:
         return {"exit_code": rc_config, "stdout": out_config}
+    if bool(payload.get("dry_run", False)):
+        return {
+            "exit_code": 0,
+            "stdout": "\n".join(
+                [
+                    out_config,
+                    "dry-run mode validated docker compose config only; no images were pulled and no services were restarted.",
+                ]
+            ).strip(),
+        }
     rc_pull, out_pull = run_command(command + ["pull"], cwd=project_dir)
     if rc_pull != 0:
         return {"exit_code": rc_pull, "stdout": out_pull}
@@ -405,6 +432,14 @@ def execute_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return status, result
     if kind == "package_patch":
         result = patch_packages(payload)
+        status = "completed" if result["exit_code"] == 0 else "failed"
+        return status, result
+    if kind == "proxmox_patch":
+        result = patch_proxmox(payload)
+        status = "completed" if result["exit_code"] == 0 else "failed"
+        return status, result
+    if kind == "proxmox_reboot":
+        result = reboot_proxmox(payload)
         status = "completed" if result["exit_code"] == 0 else "failed"
         return status, result
     if kind == "docker_update":

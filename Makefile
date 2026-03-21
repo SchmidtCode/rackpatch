@@ -31,7 +31,9 @@ release-check:
 	python3 scripts/release_check.py
 
 check-updates:
-	$(EXEC) python3 scripts/check_stack_updates.py --window $(or $(WINDOW),all) $(if $(STACKS),--stack $(STACKS),)
+	@echo "check-updates is deprecated: remote stack discovery is agent-reported now."
+	@echo "Use the UI Stacks page or queue docker_update against enrolled agents."
+	@exit 1
 
 check-packages:
 	@echo "check-packages is deprecated: package maintenance is agent/helper-backed now."

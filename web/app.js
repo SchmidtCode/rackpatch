@@ -57,12 +57,12 @@ const releaseStatus = document.getElementById("release-status");
 const releaseUpdateCommands = document.getElementById("release-update-commands");
 
 const FALLBACK_JOB_KIND = {
-  kind: "docker_discover",
-  label: "Docker discover",
+  kind: "docker_update",
+  label: "Docker update",
   mode: "stack_multi",
   target_type: "stack",
-  summary: "Select one or more stacks to inspect.",
-  defaults: { executor: "worker", window: "all", requires_approval: false },
+  summary: "Select one or more stacks to update through enrolled agents.",
+  defaults: { executor: "agent", window: "all", dry_run: true, requires_approval: false },
   default_select_all: true,
   fields: [],
 };
@@ -771,14 +771,6 @@ function buildJobRequest() {
     }
     const selectedAll = selectedStacks.length === availableStacks.length;
     targetRef = selectedAll ? "all" : selectedStacks.join(",");
-    if (kind === "docker_discover") {
-      if (selectedAll) {
-        delete payload.stacks;
-        payload.window = payload.window || "all";
-      } else {
-        payload.stacks = selectedStacks;
-      }
-    }
     if (kind === "docker_update") {
       if (selectedAll) {
         payload.selected_stacks = availableStacks.map((stack) => stack.name);
@@ -982,7 +974,6 @@ function renderStacks() {
           <td><span class="path-pill mono" title="${projectDir}">${projectDir}</span></td>
           <td>
             <div class="table-actions">
-              <button class="secondary" data-stack-action="discover" data-stack-name="${stackName}">Discover</button>
               <button class="secondary" data-stack-action="dry-run" data-stack-name="${stackName}">Dry Run</button>
               <button data-stack-action="update" data-stack-name="${stackName}">Live</button>
               <button class="secondary" data-stack-action="rollback" data-stack-name="${stackName}">Rollback</button>
@@ -1009,11 +1000,15 @@ function renderHosts() {
       const maintenance = hostMaintenanceInfo(agent);
       const agentCell = agent
         ? `${statusBadge(agent.status)}<span class="subline mono">${escapeHtml(agent.display_name || agent.name)}</span><span class="subline">${escapeHtml(maintenance.detail)}</span>`
-        : `${statusBadge(runtime.status || "Worker-routed")}<span class="subline">${escapeHtml(runtime.detail || "Agent optional. Worker and inventory jobs still available.")}</span>`;
+        : `${statusBadge(runtime.status || "No agent")}<span class="subline">${escapeHtml(runtime.detail || "Agent enrollment is required for Docker updates and helper-backed host jobs.")}</span>`;
       const isProxmoxNode = item.group === "proxmox_nodes";
       const packageCheckAccess = getNamedHostAccess(item, "package_check", "package_check");
       const packagePatchDryAccess = getNamedHostAccess(item, "package_patch_dry_run", "package_patch");
       const packagePatchLiveAccess = getNamedHostAccess(item, "package_patch_live", "package_patch");
+      const proxmoxPatchDryAccess = getNamedHostAccess(item, "proxmox_patch_dry_run", "proxmox_patch");
+      const proxmoxPatchLiveAccess = getNamedHostAccess(item, "proxmox_patch_live", "proxmox_patch");
+      const proxmoxRebootDryAccess = getNamedHostAccess(item, "proxmox_reboot_dry_run", "proxmox_reboot");
+      const proxmoxRebootLiveAccess = getNamedHostAccess(item, "proxmox_reboot_live", "proxmox_reboot");
       const packageActionNote = packagePatchLiveAccess.eligible
         ? "Package actions limited to approved host-maintenance helper access."
         : packagePatchDryAccess.eligible
@@ -1021,12 +1016,32 @@ function renderHosts() {
           : packageCheckAccess.eligible
             ? "Package checks are enabled. Package patch access is not enabled on this host."
             : "Package jobs require the limited host-maintenance helper on this host.";
+      const proxmoxActionNote = proxmoxRebootLiveAccess.eligible
+        ? "Proxmox patch and reboot are enabled through approved helper actions. Multi-node live runs stay approval-gated."
+        : proxmoxPatchLiveAccess.eligible
+          ? "Proxmox patch is enabled. Reboot helper access is not enabled on this node."
+          : proxmoxPatchDryAccess.eligible || proxmoxRebootDryAccess.eligible
+            ? "Dry-run Proxmox helper access is enabled. Multi-node live actions stay approval-gated."
+            : "Proxmox jobs require the limited Proxmox helper actions on this node.";
       const actionButtons = isProxmoxNode
         ? `
-            <button class="secondary" data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="true">Patch Dry</button>
-            <button data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="false">Patch Live</button>
-            <button class="secondary" data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="true">Reboot Dry</button>
-            <button data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="false">Reboot Live</button>
+            <button class="secondary" data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
+              !proxmoxPatchDryAccess.eligible,
+              proxmoxPatchDryAccess.detail
+            )}>Patch Dry</button>
+            <button data-host-kind="proxmox_patch" data-host-name="${hostName}" data-dry-run="false"${buttonStateAttrs(
+              !proxmoxPatchLiveAccess.eligible,
+              proxmoxPatchLiveAccess.detail
+            )}>Patch Live</button>
+            <button class="secondary" data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="true" data-reboot-mode="soft"${buttonStateAttrs(
+              !proxmoxRebootDryAccess.eligible,
+              proxmoxRebootDryAccess.detail
+            )}>Reboot Dry</button>
+            <button data-host-kind="proxmox_reboot" data-host-name="${hostName}" data-dry-run="false" data-reboot-mode="soft"${buttonStateAttrs(
+              !proxmoxRebootLiveAccess.eligible,
+              proxmoxRebootLiveAccess.detail
+            )}>Reboot Live</button>
+            <span class="subline">${escapeHtml(proxmoxActionNote)}</span>
           `
         : `
             <button class="secondary" data-host-kind="package_check" data-host-name="${hostName}" data-dry-run="true"${buttonStateAttrs(
@@ -1041,7 +1056,6 @@ function renderHosts() {
               !packagePatchLiveAccess.eligible,
               packagePatchLiveAccess.detail
             )}>Patch Live</button>
-            <button class="secondary" data-host-kind="snapshot" data-host-name="${hostName}" data-dry-run="false">Snapshot</button>
             <span class="subline">${escapeHtml(packageActionNote)}</span>
           `;
       return `
@@ -1115,7 +1129,7 @@ function renderJobs() {
           </td>
           <td>
             ${badge(item.executor, "accent")}
-            <span class="subline">${escapeHtml(item.target_agent_id || "worker-routed")}</span>
+            <span class="subline">${escapeHtml(item.target_agent_id || "control-plane-local")}</span>
           </td>
           <td>
             <div class="badge-row">
@@ -1283,17 +1297,15 @@ function renderSettings() {
     "/logs <job-id>",
     "/approvals",
     "/approve <job-id>",
-    "/discover <stack|all>",
     "/update <stack|all> [dry|live]",
     "/patch <host|all> [dry|live]",
-    "/snapshot <host>",
-    "/proxmox-patch <limit> [dry|live]",
-    "/proxmox-reboot <limit> [dry|live]",
+    "/proxmox-patch <host|proxmox_nodes> [dry|live]",
+    "/proxmox-reboot <host|proxmox_nodes> [dry|live]",
     "/backup <volume>",
     "/rollback <stack>",
     "/schedules",
     "/schedule <name-or-id> on|off",
-    '/job <kind> <target_type> <target_ref> {"executor":"auto"}',
+    '/job <kind> <target_type> <target_ref> {"executor":"agent"}',
   ].join("\n");
 
   if (automationApi) {
@@ -1758,18 +1770,9 @@ appScreen.addEventListener("click", async (event) => {
     if (!stackName || !action) {
       return;
     }
-    if (action === "discover") {
-      await queuePreset("docker_discover", "stack", stackName, {
-        executor: "worker",
-        window: "all",
-        stacks: [stackName],
-        requires_approval: false,
-      });
-      return;
-    }
     if (action === "dry-run") {
       await queuePreset("docker_update", "stack", stackName, {
-        executor: "auto",
+        executor: "agent",
         selected_stacks: [stackName],
         dry_run: true,
         requires_approval: false,
@@ -1778,7 +1781,7 @@ appScreen.addEventListener("click", async (event) => {
     }
     if (action === "update") {
       await queuePreset("docker_update", "stack", stackName, {
-        executor: "auto",
+        executor: "agent",
         selected_stacks: [stackName],
         dry_run: false,
       });
@@ -1798,11 +1801,11 @@ appScreen.addEventListener("click", async (event) => {
     if (!hostName || !kind) {
       return;
     }
-    const payload = { executor: kind.startsWith("proxmox") || kind === "snapshot" ? "worker" : "agent" };
+    const payload = { executor: "agent" };
     if (kind !== "package_check") {
       payload.dry_run = dryRun;
     }
-    if (dryRun || kind === "package_check" || kind === "snapshot") {
+    if (dryRun || kind === "package_check") {
       payload.requires_approval = false;
     }
     if (kind === "package_check") {
@@ -1810,6 +1813,9 @@ appScreen.addEventListener("click", async (event) => {
     }
     if (kind.startsWith("proxmox")) {
       payload.limit = hostName;
+    }
+    if (kind === "proxmox_reboot") {
+      payload.reboot_mode = hostButton.dataset.rebootMode || "soft";
     }
     await queuePreset(kind, "host", hostName, payload);
     return;

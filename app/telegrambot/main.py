@@ -296,22 +296,10 @@ def handle_approve(job_ref: str) -> str:
     return f"Approved job {job_id}."
 
 
-def handle_discover(target: str) -> str:
-    payload: dict[str, Any] = {
-        "executor": "worker",
-        "window": "all",
-        "requires_approval": False,
-    }
-    if target != "all":
-        payload["stacks"] = [target]
-    result = queue_job("docker_discover", "stack", target, payload)
-    return queue_job_message(result, "docker discovery", target)
-
-
 def handle_update(target: str, mode: str) -> str:
     dry_run = mode != "live"
     payload: dict[str, Any] = {
-        "executor": "auto",
+        "executor": "agent",
         "dry_run": dry_run,
     }
     if dry_run:
@@ -336,23 +324,10 @@ def handle_patch(target: str, mode: str) -> str:
     return queue_job_message(result, f"package patch ({'dry-run' if dry_run else 'live'})", target)
 
 
-def handle_snapshot(target: str) -> str:
-    result = queue_job(
-        "snapshot",
-        "host",
-        target,
-        {
-            "executor": "worker",
-            "requires_approval": False,
-        },
-    )
-    return queue_job_message(result, "snapshot", target)
-
-
 def handle_proxmox_patch(target: str, mode: str) -> str:
     dry_run = mode != "live"
     payload: dict[str, Any] = {
-        "executor": "worker",
+        "executor": "agent",
         "limit": target,
         "dry_run": dry_run,
     }
@@ -365,9 +340,10 @@ def handle_proxmox_patch(target: str, mode: str) -> str:
 def handle_proxmox_reboot(target: str, mode: str) -> str:
     dry_run = mode != "live"
     payload: dict[str, Any] = {
-        "executor": "worker",
+        "executor": "agent",
         "limit": target,
         "dry_run": dry_run,
+        "reboot_mode": "soft",
     }
     if dry_run:
         payload["requires_approval"] = False
@@ -433,12 +409,10 @@ def help_text() -> str:
             "/logs <job-id>",
             "/approvals",
             "/approve <job-id>",
-            "/discover <stack|all>",
             "/update <stack|all> [dry|live]",
             "/patch <host|all> [dry|live]",
-            "/snapshot <host>",
-            "/proxmox-patch <limit> [dry|live]",
-            "/proxmox-reboot <limit> [dry|live]",
+            "/proxmox-patch <host|proxmox_nodes> [dry|live]",
+            "/proxmox-reboot <host|proxmox_nodes> [dry|live]",
             "/backup <volume>",
             "/rollback <stack>",
             "/schedules",
@@ -476,10 +450,6 @@ def handle_command(text: str) -> str:
         if len(args) != 1:
             raise ValueError("usage: /approve <job-id>")
         return handle_approve(args[0])
-    if command == "/discover":
-        if len(args) != 1:
-            raise ValueError("usage: /discover <stack|all>")
-        return handle_discover(args[0])
     if command == "/update":
         if len(args) not in {1, 2}:
             raise ValueError("usage: /update <stack|all> [dry|live]")
@@ -488,17 +458,13 @@ def handle_command(text: str) -> str:
         if len(args) not in {1, 2}:
             raise ValueError("usage: /patch <host|all> [dry|live]")
         return handle_patch(args[0], args[1].lower() if len(args) == 2 else "dry")
-    if command == "/snapshot":
-        if len(args) != 1:
-            raise ValueError("usage: /snapshot <host>")
-        return handle_snapshot(args[0])
     if command == "/proxmox-patch":
         if len(args) not in {1, 2}:
-            raise ValueError("usage: /proxmox-patch <limit> [dry|live]")
+            raise ValueError("usage: /proxmox-patch <host|proxmox_nodes> [dry|live]")
         return handle_proxmox_patch(args[0], args[1].lower() if len(args) == 2 else "dry")
     if command == "/proxmox-reboot":
         if len(args) not in {1, 2}:
-            raise ValueError("usage: /proxmox-reboot <limit> [dry|live]")
+            raise ValueError("usage: /proxmox-reboot <host|proxmox_nodes> [dry|live]")
         return handle_proxmox_reboot(args[0], args[1].lower() if len(args) == 2 else "dry")
     if command == "/backup":
         if len(args) != 1:
