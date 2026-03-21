@@ -48,7 +48,12 @@ def enqueue_schedules() -> None:
         if row["kind"] == "docker_update" and payload.get("window") == "auto-windowed":
             payload.setdefault("requires_approval", False)
 
-        target_type = "stack" if row["kind"] in {"docker_update", "rollback"} else "host"
+        if row["kind"] in {"docker_check", "docker_update", "rollback"}:
+            target_type = "stack"
+        elif row["kind"] == "agent_update":
+            target_type = "agent"
+        else:
+            target_type = "host"
         target_ref = payload.get("target_ref", "all")
 
         try:

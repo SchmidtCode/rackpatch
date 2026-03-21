@@ -13,7 +13,7 @@
   <div class="backdrop"></div>
   <main class="shell">
     <section id="login-screen" class="panel hero">
-      <div class="eyebrow">rackpatch v0.3.2</div>
+      <div class="eyebrow"><span class="app-name">rackpatch</span> <span data-app-version></span></div>
       <h1>Homelab patching and stack maintenance from one control plane.</h1>
       <p class="lede">
         Enroll agents, inspect hosts and stacks, queue jobs, handle approvals, and drive the
@@ -31,7 +31,7 @@
       <div class="app-layout">
         <aside class="panel sidebar">
           <div class="brand-block">
-            <div class="eyebrow">rackpatch v0.3.2</div>
+            <div class="eyebrow"><span class="app-name">rackpatch</span> <span data-app-version></span></div>
             <h1 class="brand-title">rackpatch</h1>
             <p class="sidebar-copy">
               Opinionated maintenance for homelabs running Docker with agent-gated package upkeep.
@@ -113,8 +113,9 @@
             <section class="panel">
               <div class="section-head">
                 <h3>Stacks</h3>
-                <p>Table-first stack view with direct actions for discover, update, and rollback.</p>
+                <p>Inspect image updates across hosts, review stack details, then queue selected live updates.</p>
               </div>
+              <div id="stacks-summary"></div>
               <div id="stacks-table" class="table-shell"></div>
             </section>
           </section>
@@ -141,7 +142,7 @@
 
           <section class="page" data-page="jobs">
             <div class="split-layout">
-              <section class="panel">
+              <section class="panel queue-job-panel">
                 <div class="section-head">
                   <h3>Queue Job</h3>
                   <p>Use the opinionated UI here, or the same backend through Telegram commands.</p>
@@ -315,6 +316,21 @@
                   <p>Copy-paste commands to update rackpatch itself or agents after you publish a new version.</p>
                 </div>
                 <pre id="release-update-commands" class="code-card"></pre>
+              </section>
+
+              <section class="panel">
+                <div class="section-head">
+                  <div>
+                    <h3>Update All Agents</h3>
+                    <p>Generated fleet bundle for every enrolled agent, grouped by the agent mode and current install layout.</p>
+                  </div>
+                  <div class="topbar-actions">
+                    <button id="fleet-update-queue" type="button">Queue Update Jobs</button>
+                    <button id="fleet-update-copy" type="button" class="secondary">Copy bundle</button>
+                  </div>
+                </div>
+                <div id="fleet-update-summary" class="meta-block"></div>
+                <pre id="fleet-update-commands" class="code-card"></pre>
               </section>
 
               <section class="panel">

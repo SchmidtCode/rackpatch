@@ -194,5 +194,6 @@ def build_release_status(public_settings: dict[str, Any], agents: list[dict[str,
         "update_commands": {
             "stack": control_plane.build_stack_update_command(public_settings, latest_ref),
             "agents": control_plane.build_agent_update_commands(public_settings, latest_ref),
+            "fleet_agents": control_plane.build_agent_fleet_update_command(public_settings, latest_ref, agents),
         },
     }

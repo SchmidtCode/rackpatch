@@ -62,6 +62,12 @@ def _parse_json_stdout(result: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _docker_summary(result: dict[str, Any]) -> list[str]:
+    report = result.get("report")
+    if isinstance(report, dict):
+        return [
+            f"docker stack={report.get('name', 'unknown')} status={report.get('status', 'unknown')} outdated_images={report.get('outdated_count', 0)}/{report.get('image_count', 0)}"
+        ]
+
     payload = _parse_json_stdout(result)
     if not payload:
         return []
@@ -166,6 +172,8 @@ def job_message(job: dict[str, Any], event: str, result: dict[str, Any] | None =
 
     if job.get("kind") == "package_check":
         lines.extend(_package_summary(result))
+    if job.get("kind") == "docker_check":
+        lines.extend(_docker_summary(result))
 
     artifact_lines = _artifact_lines(result)
     if artifact_lines:

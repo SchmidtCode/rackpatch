@@ -6,18 +6,20 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from common import config, db, job_catalog, notify, site
+from common import config, control_plane, db, job_catalog, notify, releases, runtime_settings, site
 
 
 PACKAGE_JOB_KINDS = {"package_check", "package_patch"}
 PROXMOX_JOB_KINDS = {"proxmox_patch", "proxmox_reboot"}
+AGENT_UPDATE_JOB_KINDS = {"agent_update"}
+DOCKER_STACK_JOB_KINDS = {"docker_check", "docker_update"}
 HOST_HELPER_ACTION_CAPABILITIES = {
     "package_check": "host-package-check",
     "package_patch": "host-package-patch",
     "proxmox_patch": "host-proxmox-patch",
     "proxmox_reboot": "host-proxmox-reboot",
 }
-AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | PROXMOX_JOB_KINDS | {"docker_update"}
+AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | PROXMOX_JOB_KINDS | AGENT_UPDATE_JOB_KINDS | DOCKER_STACK_JOB_KINDS
 APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
 VALID_EXECUTORS = {"worker", "agent", "auto"}
 CANCELLABLE_STATUSES = {"queued", "pending_approval"}
@@ -26,7 +28,9 @@ AGENT_JOB_CAPABILITIES = {
     "package_patch": {"host-package-patch"},
     "proxmox_patch": {"host-proxmox-patch"},
     "proxmox_reboot": {"host-proxmox-reboot"},
+    "docker_check": {"docker-stack-inspect"},
     "docker_update": {"docker"},
+    "agent_update": {"agent-self-update"},
 }
 RETIRED_WORKER_CONTROL_JOB_KINDS = {
     "docker_discover",
@@ -86,6 +90,12 @@ def record_backup(job_id: str | None, kind: str, target_ref: str, path: str, met
 def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any]) -> str | None:
     if payload.get("target_agent_id"):
         return str(payload["target_agent_id"])
+
+    if target_type == "agent":
+        row = db.fetch_one("SELECT id FROM agents WHERE id::text = %s OR name = %s", (target_ref, target_ref))
+        if row:
+            return str(row["id"])
+        return None
 
     host_name = target_ref
     if target_type == "stack":
@@ -214,6 +224,13 @@ def _resolve_docker_update_targets(target_ref: str, payload: dict[str, Any]) -> 
     return [stack for stack in stacks if str(stack.get("update_mode") or "") == window]
 
 
+def _resolve_agent_update_targets(target_ref: str, payload: dict[str, Any]) -> list[str]:
+    requested = _dedupe(_split_targets(payload.get("selected_agents")))
+    if not requested and target_ref not in {"", "all"}:
+        requested = _dedupe(_split_targets(target_ref))
+    return requested
+
+
 def _current_maintenance_hour() -> int:
     timezone_name = str(site.load_group_vars().get("maintenance_timezone") or "UTC")
     try:
@@ -256,7 +273,7 @@ def _proxmox_job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) ->
     return None
 
 
-def _docker_update_blocker(target_ref: str, payload: dict[str, Any]) -> str | None:
+def _docker_stack_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -> str | None:
     stack = site.find_stack(target_ref)
     if not stack:
         return f"{target_ref} is not present in the stack catalog."
@@ -265,7 +282,7 @@ def _docker_update_blocker(target_ref: str, payload: dict[str, Any]) -> str | No
     if not project_dir:
         return f"{target_ref} is missing path or project_dir."
 
-    if bool(payload.get("dry_run", False)):
+    if kind == "docker_check" or bool(payload.get("dry_run", False)):
         return None
     if bool(stack.get("snapshot_before")):
         return "This stack requires snapshot_before, which is not available through the agent-only Docker update path."
@@ -292,8 +309,8 @@ def _job_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -> str | N
         return _package_job_blocker(kind, target_ref, payload)
     if kind in PROXMOX_JOB_KINDS:
         return _proxmox_job_blocker(kind, target_ref, payload)
-    if kind == "docker_update":
-        return _docker_update_blocker(target_ref, payload)
+    if kind in DOCKER_STACK_JOB_KINDS:
+        return _docker_stack_blocker(kind, target_ref, payload)
     return None
 
 
@@ -326,6 +343,18 @@ def _agent_can_run_job(kind: str, target_ref: str, payload: dict[str, Any], agen
 def host_job_access(kind: str, target_ref: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     effective_payload = dict(payload or {})
     agent_id = resolve_agent_id("host", target_ref, effective_payload)
+    error = _agent_capability_error(kind, target_ref, effective_payload, agent_id)
+    return {
+        "eligible": error is None,
+        "reason": "" if error is None else error,
+        "required_capabilities": sorted(AGENT_JOB_CAPABILITIES.get(kind, set())),
+        "target_agent_id": agent_id,
+    }
+
+
+def stack_job_access(kind: str, target_ref: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    effective_payload = dict(payload or {})
+    agent_id = resolve_agent_id("stack", target_ref, effective_payload)
     error = _agent_capability_error(kind, target_ref, effective_payload, agent_id)
     return {
         "eligible": error is None,
@@ -543,7 +572,7 @@ def _create_proxmox_jobs(
     return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
 
 
-def _create_docker_update_jobs(
+def _create_docker_stack_jobs(
     kind: str,
     target_type: str,
     target_ref: str,
@@ -553,14 +582,14 @@ def _create_docker_update_jobs(
 ) -> dict[str, Any]:
     executor = str(payload.get("executor", "agent")).strip() or "agent"
     if executor == "worker":
-        raise ValueError("docker_update no longer supports the worker executor; use an enrolled Docker-capable agent")
+        raise ValueError(f"{kind} no longer supports the worker executor; use an enrolled Docker-capable agent")
     if executor not in VALID_EXECUTORS:
         allowed = ", ".join(sorted(VALID_EXECUTORS))
         raise ValueError(f"invalid executor {executor!r}; expected one of: {allowed}")
 
     targets = _resolve_docker_update_targets(target_ref, payload)
     if not targets:
-        raise ValueError("no stacks were selected for docker_update")
+        raise ValueError(f"no stacks were selected for {kind}")
 
     requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
     status = "pending_approval" if requires_approval else "queued"
@@ -575,9 +604,14 @@ def _create_docker_update_jobs(
         child_payload = deepcopy(payload)
         child_payload.pop("target_agent_id", None)
         child_payload["selected_stacks"] = [stack_name]
+        child_payload["stack_name"] = stack_name
         child_payload["project_dir"] = str(stack.get("path") or stack.get("project_dir") or "")
         child_payload["compose_env_files"] = list(stack.get("compose_env_files") or [])
         child_payload["host"] = str(stack.get("host") or "")
+        child_payload["backup_before"] = bool(stack.get("backup_before"))
+        child_payload["snapshot_before"] = bool(stack.get("snapshot_before"))
+        child_payload["risk"] = str(stack.get("risk") or "")
+        child_payload["catalog_source"] = str(stack.get("catalog_source") or "")
         agent_id = resolve_agent_id(target_type, stack_name, child_payload)
         error = _agent_capability_error(kind, stack_name, child_payload, agent_id)
         if error:
@@ -601,7 +635,142 @@ def _create_docker_update_jobs(
 
     if not queued_jobs:
         reasons = "; ".join(f"{item['target_ref']}: {item['reason']}" for item in skipped[:4])
-        raise ValueError(reasons or "no stacks were eligible for docker_update")
+        raise ValueError(reasons or f"no stacks were eligible for {kind}")
+    if len(queued_jobs) == 1 and not skipped:
+        return queued_jobs[0]
+    return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
+
+
+def _create_docker_check_jobs(
+    kind: str,
+    target_type: str,
+    target_ref: str,
+    payload: dict[str, Any],
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    return _create_docker_stack_jobs(kind, target_type, target_ref, payload, requested_by, source)
+
+
+def _create_docker_update_jobs(
+    kind: str,
+    target_type: str,
+    target_ref: str,
+    payload: dict[str, Any],
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    return _create_docker_stack_jobs(kind, target_type, target_ref, payload, requested_by, source)
+
+
+def _agent_update_release_target(public_settings: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
+    requested_ref = str(payload.get("ref") or "").strip()
+    requested_version = str(payload.get("target_version") or "").strip()
+    if requested_ref:
+        return requested_ref, requested_version or requested_ref
+
+    latest = releases.fetch_latest_release(str(public_settings.get("repo_url") or config.PUBLIC_REPO_URL))
+    latest_version = str(latest.get("version") or "").strip()
+    target_ref = latest_version or str(public_settings.get("repo_ref") or config.PUBLIC_REPO_REF)
+    target_version = requested_version or latest_version or target_ref
+    return target_ref, target_version
+
+
+def _agent_update_skip_reason(item: dict[str, Any], target_version: str) -> str | None:
+    reason = str(item.get("reason") or "").strip()
+    if reason:
+        return reason
+    capabilities = {str(value) for value in (item.get("capabilities") or []) if str(value).strip()}
+    if "agent-self-update" not in capabilities:
+        return "agent does not yet support queued self-updates; update it manually once to bootstrap this feature"
+    if str(item.get("status") or "").lower() != "online":
+        return "agent is offline"
+    current_version = str(item.get("version") or "").strip()
+    if target_version:
+        release_state = releases.compare_versions(current_version, target_version)
+        if release_state == "current":
+            return f"already running {target_version}"
+        if release_state == "ahead":
+            return f"already ahead of {target_version}"
+    if not str(item.get("command") or "").strip():
+        return "update command is unavailable"
+    if not str(item.get("id") or "").strip():
+        return "agent id is unavailable"
+    return None
+
+
+def _create_agent_update_jobs(
+    kind: str,
+    target_type: str,
+    target_ref: str,
+    payload: dict[str, Any],
+    requested_by: str,
+    source: str,
+) -> dict[str, Any]:
+    executor = str(payload.get("executor", "agent")).strip() or "agent"
+    if executor == "worker":
+        raise ValueError("agent_update must run through enrolled agents")
+    if executor not in VALID_EXECUTORS:
+        allowed = ", ".join(sorted(VALID_EXECUTORS))
+        raise ValueError(f"invalid executor {executor!r}; expected one of: {allowed}")
+
+    public_settings = runtime_settings.get_public_settings()
+    target_ref_value, target_version = _agent_update_release_target(public_settings, payload)
+    agent_rows = db.fetch_all(
+        """
+        SELECT id, name, display_name, version, capabilities, labels, metadata, status
+        FROM agents
+        ORDER BY name
+        """
+    )
+    plan = control_plane.build_agent_update_plan(public_settings, target_ref_value, agent_rows)
+    requested_agents = _resolve_agent_update_targets(target_ref, payload)
+    requested_set = {value for value in requested_agents if value != "all"}
+    items = plan["items"]
+    if requested_set:
+        items = [item for item in items if str(item.get("agent_name") or "") in requested_set]
+    if not items:
+        raise ValueError("no enrolled agents matched the requested selection")
+
+    requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
+    status = "pending_approval" if requires_approval else "queued"
+    approval_status = "pending" if requires_approval else "not_required"
+    queued_jobs: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for item in items:
+        label = str(item.get("name") or item.get("agent_name") or "unknown")
+        reason = _agent_update_skip_reason(item, target_version)
+        if reason:
+            skipped.append({"target_ref": label, "reason": reason})
+            continue
+
+        child_payload = deepcopy(payload)
+        child_payload.pop("target_agent_id", None)
+        child_payload["update_command"] = str(item.get("command") or "")
+        child_payload["release_ref"] = target_ref_value
+        child_payload["target_version"] = target_version
+        child_payload["update_mode"] = str(item.get("mode") or "")
+        child_payload["target_agent_name"] = str(item.get("agent_name") or "")
+        queued_jobs.append(
+            _insert_job(
+                kind=kind,
+                status=status,
+                source=source,
+                target_type=target_type,
+                target_ref=str(item.get("agent_name") or label),
+                executor="agent",
+                payload=child_payload,
+                requested_by=requested_by,
+                requires_approval=requires_approval,
+                approval_status=approval_status,
+                target_agent_id=str(item.get("id") or ""),
+            )
+        )
+
+    if not queued_jobs:
+        reasons = "; ".join(f"{item['target_ref']}: {item['reason']}" for item in skipped[:4])
+        raise ValueError(reasons or "no agents were eligible for agent_update")
     if len(queued_jobs) == 1 and not skipped:
         return queued_jobs[0]
     return _fanout_summary(kind, target_type, target_ref, queued_jobs, skipped)
@@ -625,8 +794,12 @@ def create_job(
         return _create_package_jobs(kind, target_type, target_ref, payload, requested_by, source)
     if kind in PROXMOX_JOB_KINDS:
         return _create_proxmox_jobs(kind, target_type, target_ref, payload, requested_by, source)
+    if kind == "docker_check":
+        return _create_docker_check_jobs(kind, target_type, target_ref, payload, requested_by, source)
     if kind == "docker_update":
         return _create_docker_update_jobs(kind, target_type, target_ref, payload, requested_by, source)
+    if kind == "agent_update":
+        return _create_agent_update_jobs(kind, target_type, target_ref, payload, requested_by, source)
     if kind == "rollback":
         blocker = _rollback_blocker(target_ref)
         if blocker:
