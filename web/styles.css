@@ -422,6 +422,25 @@ button.danger {
   accent-color: var(--accent);
 }
 
+.job-table td:first-child,
+.job-table th:first-child,
+.backup-table td:first-child,
+.backup-table th:first-child {
+  width: 56px;
+}
+
+.job-table input[type="checkbox"],
+.backup-table input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
 .stack-detail-shell td {
   padding-top: 0;
   background: rgba(255, 255, 255, 0.01);

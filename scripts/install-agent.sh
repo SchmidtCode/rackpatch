@@ -245,6 +245,7 @@ prepare_source_context() {
   rm -rf "${target_dir}/src"
   mkdir -p "${target_dir}/src"
   cp -R "${src_root}/app" "${target_dir}/src/app"
+  cp -R "${src_root}/scripts" "${target_dir}/src/scripts"
   cp "${src_root}/Dockerfile.agent" "${target_dir}/src/Dockerfile.agent"
   cp "${src_root}/requirements-rackpatch.txt" "${target_dir}/src/requirements-rackpatch.txt"
 }
@@ -373,7 +374,9 @@ fi
 src_root="$(resolve_source)"
 mkdir -p "${install_dir}"
 rm -rf "${install_dir}/app"
+rm -rf "${install_dir}/scripts"
 cp -R "${src_root}/app" "${install_dir}/app"
+cp -R "${src_root}/scripts" "${install_dir}/scripts"
 cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/requirements-rackpatch.txt"
 ensure_python_venv() {
   local venv_dir="$1"

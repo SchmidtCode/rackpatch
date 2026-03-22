@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -421,10 +422,11 @@ def claim(state: dict[str, Any]) -> dict[str, Any] | None:
     return payload["job"]
 
 
-def run_command(command: list[str], cwd: str | None = None) -> tuple[int, str]:
+def run_command(command: list[str], cwd: str | None = None, env: dict[str, str] | None = None) -> tuple[int, str]:
     process = subprocess.Popen(
         command,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -434,6 +436,55 @@ def run_command(command: list[str], cwd: str | None = None) -> tuple[int, str]:
     for raw in process.stdout:
         output.append(raw.rstrip("\n"))
     return process.wait(), "\n".join(output)
+
+
+def run_command_split(
+    command: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout_text, stderr_text = process.communicate()
+    return process.returncode, stdout_text.rstrip("\n"), stderr_text.rstrip("\n")
+
+
+def _join_output(*parts: str) -> str:
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _load_json_output(stdout: str, stderr: str, *, description: str) -> tuple[Any, list[str]]:
+    warnings: list[str] = []
+    if stderr.strip():
+        warnings.append(stderr.strip())
+
+    try:
+        return json.loads(stdout), warnings
+    except json.JSONDecodeError:
+        combined = _join_output(stdout, stderr)
+        if not combined:
+            raise RuntimeError(f"{description} returned empty output") from None
+
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"(?m)^[\t ]*[\[{]", combined):
+            candidate = combined[match.start() :].lstrip()
+            try:
+                parsed, end = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+
+            leading = combined[: match.start()].strip()
+            trailing = candidate[end:].strip()
+            fallback_warnings = [part for part in [leading, trailing] if part]
+            return parsed, fallback_warnings
+
+    raise RuntimeError(f"{description} returned invalid json")
 
 
 def _path_is_within(root: str, candidate: str) -> bool:
@@ -515,16 +566,13 @@ def _compose_config_json(project_dir: str, compose_env_files: list[str]) -> dict
     command = _compose_command(compose_env_files)
     if command is None:
         raise RuntimeError("docker compose command is not available")
-    rc, stdout = run_command(command + ["config", "--format", "json"], cwd=project_dir)
+    rc, stdout, stderr = run_command_split(command + ["config", "--format", "json"], cwd=project_dir)
     if rc != 0:
-        raise RuntimeError(stdout or "compose config failed")
-    try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"compose config returned invalid json: {exc}") from exc
+        raise RuntimeError(_join_output(stdout, stderr) or "compose config failed")
+    parsed, warnings = _load_json_output(stdout, stderr, description="compose config")
     if not isinstance(parsed, dict):
         raise RuntimeError("compose config returned a non-object payload")
-    return parsed
+    return {"payload": parsed, "warnings": warnings}
 
 
 def _normalize_repo(ref: str) -> str:
@@ -577,7 +625,8 @@ def _inspect_stack_services(
     project_dir: str,
     compose_env_files: list[str],
 ) -> dict[str, Any]:
-    config_payload = _compose_config_json(project_dir, compose_env_files)
+    config_result = _compose_config_json(project_dir, compose_env_files)
+    config_payload = config_result["payload"]
     client = docker_client()
     if client is None:
         raise RuntimeError("docker engine is not available")
@@ -590,6 +639,7 @@ def _inspect_stack_services(
         "outdated_count": 0,
         "status": "unknown",
         "services": [],
+        "compose_warnings": list(config_result.get("warnings") or []),
     }
     try:
         services = config_payload.get("services") or {}
@@ -651,7 +701,8 @@ def _inspect_stack_services(
 
 
 def _capture_stack_state(project_dir: str, compose_env_files: list[str]) -> dict[str, Any]:
-    config_payload = _compose_config_json(project_dir, compose_env_files)
+    config_result = _compose_config_json(project_dir, compose_env_files)
+    config_payload = config_result["payload"]
     command = _compose_command(compose_env_files)
     if command is None:
         raise RuntimeError("docker compose command is not available")
@@ -708,6 +759,148 @@ def _write_rollback_capture(stack_name: str, state: dict[str, Any]) -> dict[str,
         "capture_path": str(capture_path),
         "latest_path": str(latest_path),
     }
+
+
+def _normalize_positive_int(value: Any, default: int, minimum: int = 1) -> int:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, number)
+
+
+def _normalize_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
+def _stack_backup_root(stack_name: str) -> Path:
+    return STATE_DIR / "backups" / _safe_token(stack_name)
+
+
+def _agent_artifact_path(host: str, artifact_path: Path) -> str:
+    value = str(artifact_path)
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return f"agent://{_safe_token(host)}{value}"
+
+
+def _backup_artifact(
+    stack_name: str,
+    host: str,
+    artifact_path: Path,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    size_bytes: int | None = None
+    try:
+        size_bytes = artifact_path.stat().st_size
+    except FileNotFoundError:
+        size_bytes = None
+    return {
+        "kind": "backup",
+        "target_ref": stack_name,
+        "path": _agent_artifact_path(host, artifact_path),
+        "container_path": str(artifact_path),
+        "source": source,
+        "host": host,
+        "agent_managed": True,
+        "size_bytes": size_bytes,
+    }
+
+
+def _backup_run_key(path: Path) -> str:
+    match = re.search(r"(\d{14})", path.name)
+    return match.group(1) if match else path.name
+
+
+def _collect_backup_files(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted((path for path in root.rglob("*") if path.is_file()), key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def _create_stack_backup_archive(stack_name: str, host: str, project_dir: str, stamp: str) -> tuple[Path, dict[str, Any]]:
+    backup_root = _stack_backup_root(stack_name)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    archive_path = backup_root / f"{stamp}-stack.tgz"
+    project_path = Path(project_dir)
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(project_path, arcname=project_path.name)
+    return archive_path, _backup_artifact(stack_name, host, archive_path, source="agent-docker-update")
+
+
+def _rewrite_backup_command(command: str) -> str:
+    bundled_scripts_root = str(config.SCRIPTS_ROOT)
+    if "/workspace/scripts" in command and bundled_scripts_root:
+        return command.replace("/workspace/scripts", bundled_scripts_root)
+    return command
+
+
+def _run_backup_commands(
+    stack_name: str,
+    host: str,
+    project_dir: str,
+    commands: list[str],
+    stamp: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not commands:
+        return [], []
+    backup_root = _stack_backup_root(stack_name)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["BACKUP_ROOT"] = str(backup_root)
+    env["STACK_UPDATE_STAMP"] = stamp
+    env["RACKPATCH_SCRIPTS_ROOT"] = str(config.SCRIPTS_ROOT)
+    output_lines: list[str] = []
+    for command in commands:
+        normalized = _rewrite_backup_command(str(command))
+        rc_command, out_command = run_command(["bash", "-lc", normalized], cwd=project_dir, env=env)
+        if out_command.strip():
+            output_lines.append(out_command.strip())
+        if rc_command != 0:
+            raise RuntimeError(f"backup command failed: {normalized}")
+
+    artifacts: list[dict[str, Any]] = []
+    for path in sorted(path for path in backup_root.rglob(f"*{stamp}*") if path.is_file()):
+        artifacts.append(_backup_artifact(stack_name, host, path, source="agent-docker-update-command"))
+    return artifacts, output_lines
+
+
+def _prune_backup_runs(stack_name: str, host: str, retention: int) -> list[dict[str, Any]]:
+    backup_root = _stack_backup_root(stack_name)
+    retention = _normalize_positive_int(retention, 3)
+    files = _collect_backup_files(backup_root)
+    if not files:
+        return []
+
+    grouped: dict[str, list[Path]] = {}
+    for path in files:
+        grouped.setdefault(_backup_run_key(path), []).append(path)
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: max(member.stat().st_mtime for member in item[1]),
+        reverse=True,
+    )
+
+    pruned: list[dict[str, Any]] = []
+    for _, members in ordered_groups[retention:]:
+        for path in members:
+            if not path.exists():
+                continue
+            path.unlink()
+            pruned.append(_backup_artifact(stack_name, host, path, source="agent-docker-update-pruned"))
+    return pruned
 
 
 def _summarize_stack_changes(before: dict[str, Any], after: dict[str, Any], stack_name: str, host: str) -> dict[str, Any]:
@@ -815,8 +1008,51 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     artifacts: list[dict[str, Any]] = []
+    pruned_artifacts: list[dict[str, Any]] = []
     rollback_capture: dict[str, Any] | None = None
     before_state: dict[str, Any] | None = None
+    update_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    backup_output: list[str] = []
+    backup_requested = bool(payload.get("backup_before"))
+    run_backup_commands = _normalize_bool(payload.get("run_backup_commands"), False)
+    backup_commands = [str(item) for item in (payload.get("backup_commands") or []) if str(item).strip()]
+    backup_retention = _normalize_positive_int(payload.get("backup_retention"), 3)
+
+    if backup_requested:
+        try:
+            archive_path, archive_artifact = _create_stack_backup_archive(stack_name, host, project_dir, update_stamp)
+            del archive_path
+            artifacts.append(archive_artifact)
+            if run_backup_commands and backup_commands:
+                command_artifacts, command_output = _run_backup_commands(
+                    stack_name,
+                    host,
+                    project_dir,
+                    backup_commands,
+                    update_stamp,
+                )
+                seen_paths = {str(item.get("container_path") or "") for item in artifacts}
+                for artifact in command_artifacts:
+                    container_path = str(artifact.get("container_path") or "")
+                    if container_path in seen_paths:
+                        continue
+                    seen_paths.add(container_path)
+                    artifacts.append(artifact)
+                backup_output.extend(command_output)
+            pruned_artifacts = _prune_backup_runs(stack_name, host, backup_retention)
+        except Exception as exc:  # noqa: BLE001
+            stdout_parts = [out_config]
+            if backup_output:
+                stdout_parts.extend(backup_output)
+            stdout_parts.append(str(exc))
+            return {
+                "exit_code": 1,
+                "error": f"failed to capture stack backup: {exc}",
+                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                "artifacts": artifacts,
+                "pruned_artifacts": pruned_artifacts,
+            }
+
     try:
         before_state = _capture_stack_state(project_dir, compose_env_files)
         before_state.update({"stack_name": stack_name, "host": host})
@@ -833,20 +1069,40 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
     except Exception as exc:  # noqa: BLE001
+        stdout_parts = [out_config]
+        if backup_output:
+            stdout_parts.extend(backup_output)
+        stdout_parts.append(str(exc))
         return {
             "exit_code": 1,
             "error": f"failed to capture rollback metadata: {exc}",
-            "stdout": "\n".join([out_config, str(exc)]).strip(),
+            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+            "artifacts": artifacts,
+            "pruned_artifacts": pruned_artifacts,
         }
 
     rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
     if rc_pull != 0:
-        return {"exit_code": rc_pull, "stdout": "\n".join([out_config, out_pull]).strip(), "artifacts": artifacts}
+        stdout_parts = [out_config]
+        if backup_output:
+            stdout_parts.extend(backup_output)
+        stdout_parts.append(out_pull)
+        return {
+            "exit_code": rc_pull,
+            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+            "artifacts": artifacts,
+            "pruned_artifacts": pruned_artifacts,
+        }
     rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
+    stdout_parts = [out_config]
+    if backup_output:
+        stdout_parts.extend(backup_output)
+    stdout_parts.extend([out_pull, out_up])
     result: dict[str, Any] = {
         "exit_code": rc_up,
-        "stdout": "\n".join([out_config, out_pull, out_up]).strip(),
+        "stdout": "\n".join(part for part in stdout_parts if part).strip(),
         "artifacts": artifacts,
+        "pruned_artifacts": pruned_artifacts,
     }
     if rollback_capture:
         result["rollback_capture"] = rollback_capture
