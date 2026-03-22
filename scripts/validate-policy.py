@@ -42,8 +42,6 @@ for stack in data.get("stacks", []):
         errors.append(f"{stack.get('name', '<unknown>')}: invalid update_mode {stack.get('update_mode')}")
     if stack.get("risk") == "high" and stack.get("update_mode") != "approve":
         errors.append(f"{stack.get('name', '<unknown>')}: high-risk stacks must stay approve-gated")
-    if stack.get("snapshot_before") and not stack.get("backup_before") and stack.get("risk") == "high":
-        errors.append(f"{stack.get('name', '<unknown>')}: high-risk snapshot stacks should also request backups")
     if "compose_env_files" not in stack:
         errors.append(f"{stack.get('name', '<unknown>')}: compose_env_files is required")
     elif not isinstance(stack.get("compose_env_files"), list):

@@ -9,6 +9,9 @@ from common import config, db
 
 PUBLIC_SETTINGS_KEY = "public_settings"
 TELEGRAM_SETTINGS_KEY = "telegram_settings"
+DOCKER_UPDATE_SETTINGS_KEY = "docker_update_settings"
+DEFAULT_DOCKER_BACKUP_RETENTION = 3
+DEFAULT_DOCKER_RUN_BACKUP_COMMANDS = False
 
 
 def _load_json_setting(key: str) -> dict[str, Any]:
@@ -36,6 +39,29 @@ def _normalize_text(value: Any, *, strip_trailing_slash: bool = False) -> str:
     if strip_trailing_slash:
         text = text.rstrip("/")
     return text
+
+
+def _normalize_positive_int(value: Any, default: int, minimum: int = 1) -> int:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, number)
+
+
+def _normalize_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return default
 
 
 def _parse_chat_ids(value: Any) -> list[str]:
@@ -93,6 +119,36 @@ def set_public_settings(payload: dict[str, Any]) -> dict[str, str]:
             )
     _save_json_setting(PUBLIC_SETTINGS_KEY, stored)
     return get_public_settings()
+
+
+def get_docker_update_settings() -> dict[str, Any]:
+    stored = _load_json_setting(DOCKER_UPDATE_SETTINGS_KEY)
+    return {
+        "backup_retention": _normalize_positive_int(
+            stored.get("backup_retention"),
+            DEFAULT_DOCKER_BACKUP_RETENTION,
+        ),
+        "run_backup_commands": _normalize_bool(
+            stored.get("run_backup_commands"),
+            DEFAULT_DOCKER_RUN_BACKUP_COMMANDS,
+        ),
+    }
+
+
+def set_docker_update_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    stored = _load_json_setting(DOCKER_UPDATE_SETTINGS_KEY)
+    if "backup_retention" in payload:
+        stored["backup_retention"] = _normalize_positive_int(
+            payload.get("backup_retention"),
+            DEFAULT_DOCKER_BACKUP_RETENTION,
+        )
+    if "run_backup_commands" in payload:
+        stored["run_backup_commands"] = _normalize_bool(
+            payload.get("run_backup_commands"),
+            DEFAULT_DOCKER_RUN_BACKUP_COMMANDS,
+        )
+    _save_json_setting(DOCKER_UPDATE_SETTINGS_KEY, stored)
+    return get_docker_update_settings()
 
 
 def get_telegram_settings(*, include_secret: bool = False) -> dict[str, Any]:

@@ -168,12 +168,13 @@ def _backup_file_candidates(item: dict[str, Any]) -> list[Path]:
 
     raw_path = str(item.get("path") or "").strip()
     if raw_path:
-        raw_candidate = Path(raw_path)
-        if raw_candidate.is_absolute():
-            candidates.append(raw_candidate)
-        else:
-            trimmed = raw_path[5:] if raw_path.startswith("data/") else raw_path
-            candidates.append(config.DATA_ROOT / trimmed)
+        if not raw_path.startswith("agent://"):
+            raw_candidate = Path(raw_path)
+            if raw_candidate.is_absolute():
+                candidates.append(raw_candidate)
+            else:
+                trimmed = raw_path[5:] if raw_path.startswith("data/") else raw_path
+                candidates.append(config.DATA_ROOT / trimmed)
 
     deduped: list[Path] = []
     seen: set[str] = set()
@@ -193,7 +194,16 @@ def _backup_details(item: dict[str, Any]) -> dict[str, Any]:
     preferred_path = existing_file or (candidates[0] if candidates else None)
     backup_root = config.BACKUPS_ROOT.resolve(strict=False)
     within_backups_root = bool(preferred_path and _is_relative_to(preferred_path, backup_root))
-    size_bytes = existing_file.stat().st_size if existing_file else None
+    metadata = item.get("metadata") or {}
+    if existing_file:
+        size_bytes: int | None = existing_file.stat().st_size
+    else:
+        raw_size = metadata.get("size_bytes")
+        try:
+            parsed_size = int(raw_size) if raw_size is not None else None
+        except (TypeError, ValueError):
+            parsed_size = None
+        size_bytes = parsed_size if parsed_size is not None and parsed_size >= 0 else None
     display_name = preferred_path.name if preferred_path else Path(str(item.get("path") or "")).name
     return {
         "resolved_path": str(preferred_path) if preferred_path else "",
@@ -201,6 +211,8 @@ def _backup_details(item: dict[str, Any]) -> dict[str, Any]:
         "exists": bool(existing_file),
         "size_bytes": size_bytes,
         "delete_supported": bool(existing_file and within_backups_root),
+        "artifact_host": str(metadata.get("host") or ""),
+        "artifact_source": str(metadata.get("source") or ""),
     }
 
 
@@ -217,6 +229,13 @@ def _job_summary_rows(where_sql: str = "", params: tuple[Any, ...] = (), limit: 
         """,
         params,
     )
+
+
+def _job_details(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **item,
+        "deletable": jobs.job_is_deletable(item.get("status")),
+    }
 
 
 def _latest_stack_job_map(kind: str) -> dict[str, dict[str, Any]]:
@@ -283,22 +302,6 @@ def _docker_stack_access(
             "required_capabilities": required,
             "target_agent_id": str(agent.get("id") or ""),
         }
-
-    if kind == "docker_update" and not dry_run:
-        if bool(stack.get("snapshot_before")):
-            return {
-                "eligible": False,
-                "reason": "This stack requires snapshot_before, which is not available through the agent-only Docker update path.",
-                "required_capabilities": ["docker"],
-                "target_agent_id": str(agent.get("id") or ""),
-            }
-        if bool(stack.get("backup_before")):
-            return {
-                "eligible": False,
-                "reason": "This stack requires backup_before, which is not available through the agent-only Docker update path.",
-                "required_capabilities": ["docker"],
-                "target_agent_id": str(agent.get("id") or ""),
-            }
 
     required = {"docker-stack-inspect"} if kind == "docker_check" else {"docker"}
     capabilities = _agent_capability_set(agent)
@@ -412,6 +415,20 @@ def _docker_updates_payload() -> dict[str, Any]:
         ),
     }
 
+    checkable_items = [item for item in items if item["job_access"]["docker_check"]["eligible"]]
+    completed_checkable_items = [
+        item
+        for item in checkable_items
+        if item["inspection"]["state"] not in {"never_checked", "queued", "pending_approval", "running"}
+        and item["inspection"].get("checked_at")
+    ]
+    summary["last_full_check_at"] = None
+    if checkable_items and len(completed_checkable_items) == len(checkable_items):
+        summary["last_full_check_at"] = max(
+            str(item["inspection"]["checked_at"])
+            for item in completed_checkable_items
+        )
+
     return {
         "summary": summary,
         "items": items,
@@ -421,6 +438,7 @@ def _docker_updates_payload() -> dict[str, Any]:
 def _settings_payload() -> dict[str, Any]:
     bootstrap_token = auth.ensure_bootstrap_token()
     public_settings = runtime_settings.get_public_settings()
+    docker_update_settings = runtime_settings.get_docker_update_settings()
     telegram_settings = runtime_settings.get_telegram_settings()
     agents = db.fetch_all(
         """
@@ -448,6 +466,7 @@ def _settings_payload() -> dict[str, Any]:
             "maintenance": str(site.maintenance_path()),
         },
         "public": public_settings,
+        "docker_updates": docker_update_settings,
         "telegram": telegram_settings,
         "default_agent_bootstrap_token": bootstrap_token,
         "agent_install": control_plane.build_agent_install_commands(public_settings, bootstrap_token),
@@ -617,17 +636,18 @@ def agents(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 @app.get("/api/v1/jobs")
 def list_jobs(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
+    items = db.fetch_all(
+        """
+        SELECT id, kind, status, source, target_type, target_ref, executor, payload,
+               result, requested_by, requires_approval, approval_status, approved_by,
+               target_agent_id, created_at, queued_at, started_at, finished_at
+        FROM jobs
+        ORDER BY created_at DESC
+        LIMIT 200
+        """
+    )
     return {
-        "items": db.fetch_all(
-            """
-            SELECT id, kind, status, source, target_type, target_ref, executor, payload,
-                   result, requested_by, requires_approval, approval_status, approved_by,
-                   target_agent_id, created_at, queued_at, started_at, finished_at
-            FROM jobs
-            ORDER BY created_at DESC
-            LIMIT 200
-            """
-        )
+        "items": [_job_details(item) for item in items]
     }
 
 
@@ -637,7 +657,7 @@ def get_job(job_id: str, username: str = Depends(auth.require_user)) -> dict[str
     row = db.fetch_one("SELECT * FROM jobs WHERE id = %s", (job_id,))
     if not row:
         raise HTTPException(status_code=404, detail="job not found")
-    return row
+    return _job_details(row)
 
 
 @app.get("/api/v1/jobs/{job_id}/events")
@@ -686,6 +706,19 @@ def cancel(job_id: str, username: str = Depends(auth.require_user)) -> dict[str,
     if not row:
         raise HTTPException(status_code=409, detail="job cannot be cancelled in its current state")
     return row
+
+
+@app.delete("/api/v1/jobs/{job_id}")
+def delete_job(job_id: str, username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    row, reason = jobs.delete_job(job_id, username)
+    if not row:
+        if reason == "not_found":
+            raise HTTPException(status_code=404, detail="job not found")
+        raise HTTPException(
+            status_code=409,
+            detail="job cannot be deleted unless it is completed, failed, or cancelled",
+        )
+    return _job_details(row)
 
 
 @app.get("/api/v1/backups")
@@ -831,6 +864,13 @@ def context(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 def update_public_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     runtime_settings.set_public_settings(payload)
+    return _settings_payload()
+
+
+@app.post("/api/v1/settings/docker-updates")
+def update_docker_update_settings(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    runtime_settings.set_docker_update_settings(payload)
     return _settings_payload()
 
 
@@ -1072,6 +1112,9 @@ def complete_job(
             path=artifact.get("path", ""),
             metadata=artifact,
         )
+    pruned_artifacts = result.get("pruned_artifacts") or []
+    if isinstance(pruned_artifacts, list):
+        jobs.remove_recorded_backups([item for item in pruned_artifacts if isinstance(item, dict)])
     job = db.fetch_one("SELECT * FROM jobs WHERE id = %s", (job_id,))
     if job:
         notify.send_job_event(job, status, result)

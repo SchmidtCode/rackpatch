@@ -261,6 +261,22 @@
 
               <section class="panel">
                 <div class="section-head">
+                  <h3>Docker Update Settings</h3>
+                  <p>Control lightweight pre-update backups for agent-driven Docker stack updates.</p>
+                </div>
+                <form id="docker-update-settings-form" class="stack-form">
+                  <input id="docker-backup-retention" type="number" min="1" step="1" placeholder="3" />
+                  <label class="checkbox-row">
+                    <input id="docker-run-backup-commands" type="checkbox" />
+                    Also run stack-specific <code>backup_commands</code> during Docker live updates
+                  </label>
+                  <button type="submit">Save Docker Update Settings</button>
+                </form>
+                <p id="docker-update-settings-result" class="hint"></p>
+              </section>
+
+              <section class="panel">
+                <div class="section-head">
                   <h3>Telegram</h3>
                   <p>Configure the bot token, allowed chats, and text command access.</p>
                 </div>

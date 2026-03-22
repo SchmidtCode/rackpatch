@@ -6,7 +6,9 @@ const state = {
   jobFormKind: null,
   jobOptionValues: {},
   jobLogExpanded: false,
+  jobSelection: [],
   stackSelection: [],
+  backupSelection: [],
   expandedStacks: {},
   stackUpdateRequiresApproval: true,
   data: null,
@@ -178,6 +180,9 @@ function formatTimestamp(value) {
 }
 
 function formatBytes(value) {
+  if (value === null || value === undefined || value === "") {
+    return "n/a";
+  }
   const size = Number(value);
   if (!Number.isFinite(size) || size < 0) {
     return "n/a";
@@ -269,6 +274,70 @@ function toggleStackSelection(name, checked) {
   }
   setSelectedStacks([...next]);
   renderStacks();
+}
+
+function getBackupItems() {
+  return state.data?.backups?.items || [];
+}
+
+function getJobItems() {
+  return state.data?.jobs?.items || [];
+}
+
+function canDeleteJob(job) {
+  return Boolean(job?.deletable) || ["completed", "failed", "cancelled"].includes(String(job?.status || "").toLowerCase());
+}
+
+function selectedJobIds() {
+  const allowed = new Set(getJobItems().filter((item) => canDeleteJob(item)).map((item) => item.id));
+  state.jobSelection = state.jobSelection.filter((id) => allowed.has(id));
+  return [...state.jobSelection];
+}
+
+function isJobSelected(id) {
+  return selectedJobIds().includes(id);
+}
+
+function setSelectedJobs(ids) {
+  const allowed = new Set(getJobItems().filter((item) => canDeleteJob(item)).map((item) => item.id));
+  state.jobSelection = [...new Set((ids || []).filter((id) => allowed.has(id)))];
+}
+
+function toggleJobSelection(id, checked) {
+  const next = new Set(selectedJobIds());
+  if (checked) {
+    next.add(id);
+  } else {
+    next.delete(id);
+  }
+  setSelectedJobs([...next]);
+  renderJobs();
+}
+
+function selectedBackupIds() {
+  const available = new Set(getBackupItems().map((item) => item.id));
+  state.backupSelection = state.backupSelection.filter((id) => available.has(id));
+  return [...state.backupSelection];
+}
+
+function isBackupSelected(id) {
+  return selectedBackupIds().includes(id);
+}
+
+function setSelectedBackups(ids) {
+  const allowed = new Set(getBackupItems().map((item) => item.id));
+  state.backupSelection = [...new Set((ids || []).filter((id) => allowed.has(id)))];
+}
+
+function toggleBackupSelection(id, checked) {
+  const next = new Set(selectedBackupIds());
+  if (checked) {
+    next.add(id);
+  } else {
+    next.delete(id);
+  }
+  setSelectedBackups([...next]);
+  renderBackups();
 }
 
 function toggleStackDetails(name) {
@@ -959,6 +1028,12 @@ function syncJobLogPanel() {
   jobLogExpandButton.textContent = state.jobLogExpanded ? "Collapse" : "Expand";
 }
 
+function clearSelectedJobDetails(message = "No job selected.") {
+  state.selectedJob = null;
+  jobResult.innerHTML = "";
+  jobEvents.textContent = message;
+}
+
 function canCancelJob(job) {
   return ["queued", "pending_approval"].includes(job.status);
 }
@@ -1084,6 +1159,9 @@ function renderStacks() {
   if (stacksSummary) {
     const selectable = Number(summary.selectable_stacks || 0);
     const canUpdateSelected = selected.length > 0;
+    const lastFullCheck = summary.last_full_check_at
+      ? `Last full eligible check: ${formatTimestamp(summary.last_full_check_at)}`
+      : "Last full eligible check: not completed yet";
     stacksSummary.innerHTML = `
       <div class="stack-toolbar">
         <div class="stack-summary-grid">
@@ -1091,6 +1169,7 @@ function renderStacks() {
             <span class="stat-label">Coverage</span>
             <strong>${pluralize(Number(summary.checked_stacks || 0), "stack")} checked of ${summary.total_stacks || 0}</strong>
             <span class="subline">${pluralize(Number(summary.running_checks || 0), "check")} still running</span>
+            <span class="subline">${escapeHtml(lastFullCheck)}</span>
           </div>
           <div class="stack-summary-card">
             <span class="stat-label">Updates</span>
@@ -1149,10 +1228,12 @@ function renderStacks() {
             const liveAccess = item.job_access?.docker_update_live || {};
             const checkAccess = item.job_access?.docker_check || {};
             const dryAccess = item.job_access?.docker_update_dry_run || {};
+            const dockerUpdateSettings = state.data?.settings?.docker_updates || {};
             const resolvedHost = item.resolved_host || (item.host === "localhost" && item.guest_host ? item.guest_host : item.host);
             const host = escapeHtml(resolvedHost || "unknown");
             const projectDir = escapeHtml(item.project_dir || item.path || "not set");
             const envCount = (item.compose_env_files || []).length;
+            const backupCommandCount = (item.backup_commands || []).length;
             const sourceLabel =
               item.catalog_source === "discovered"
                 ? `Discovered from agent${item.agent_status ? ` · ${item.agent_status}` : ""}`
@@ -1162,7 +1243,11 @@ function renderStacks() {
             const changedServices = Number((latestUpdate.summary || {}).changed_services || 0);
             const policyBits = [
               item.backup_before ? "backup_before" : "",
-              item.snapshot_before ? "snapshot_before" : "",
+              item.backup_before && backupCommandCount
+                ? dockerUpdateSettings.run_backup_commands
+                  ? `backup_commands x${backupCommandCount}`
+                  : "backup_commands disabled"
+                : "",
             ].filter(Boolean);
             const accessPrimary = liveAccess.eligible
               ? "Live updates available through the stack agent."
@@ -1385,51 +1470,105 @@ function renderAgents() {
 }
 
 function renderJobs() {
-  const items = state.data.jobs.items;
-  renderTable(
-    "jobs-table",
-    ["Job", "Target", "Execution", "Status", "Created", "Actions"],
-    items.map((item) => {
-      const config = getJobKindConfig(item.kind);
-      const access = config.special_access || null;
-      return `
-        <tr>
-          <td>
-            <strong>${escapeHtml(item.kind)}</strong>
-            ${access ? `<span class="subline">${escapeHtml(access.short_label || access.summary || "")}</span>` : ""}
-            <span class="subline mono">${escapeHtml(item.id)}</span>
-          </td>
-          <td>
-            ${escapeHtml(item.target_type)}:${escapeHtml(item.target_ref)}
-            <span class="subline">${escapeHtml(item.source)} by ${escapeHtml(item.requested_by)}</span>
-          </td>
-          <td>
-            ${badge(item.executor, "accent")}
-            <span class="subline">${escapeHtml(item.target_agent_id || "control-plane-local")}</span>
-          </td>
-          <td>
-            <div class="badge-row">
-              ${statusBadge(item.status)}
-              ${statusBadge(item.approval_status)}
-            </div>
-          </td>
-          <td>${escapeHtml(formatTimestamp(item.created_at))}</td>
-          <td>
-            <div class="table-actions">
-              <button class="secondary" data-job-log="${escapeHtml(item.id)}">Logs</button>
-              ${
-                item.approval_status === "pending"
-                  ? `<button data-job-approve="${escapeHtml(item.id)}">Approve</button>`
-                  : ""
-              }
-              ${canCancelJob(item) ? `<button class="danger" data-job-cancel="${escapeHtml(item.id)}">Cancel</button>` : ""}
-            </div>
-          </td>
-        </tr>
-      `;
-    }),
-    "No jobs yet."
-  );
+  const root = document.getElementById("jobs-table");
+  const items = getJobItems();
+  if (!items.length) {
+    root.innerHTML = emptyState("No jobs yet.");
+    return;
+  }
+
+  const selectedIds = selectedJobIds();
+  const selectedCount = selectedIds.length;
+  const deletableCount = items.filter((item) => canDeleteJob(item)).length;
+  root.innerHTML = `
+    <div class="stack-toolbar">
+      <div class="stack-selection-controls">
+        <div>
+          <strong>${pluralize(selectedCount, "job")} selected</strong>
+          <span class="subline">Delete completed, failed, or cancelled jobs in bulk. Deleting a job also removes its saved event log.</span>
+        </div>
+        <div class="table-actions">
+          <button type="button" class="secondary" data-job-select-mode="deletable" ${deletableCount ? "" : "disabled"}>Select deletable</button>
+          <button type="button" class="secondary" data-job-select-mode="older-1d" ${deletableCount ? "" : "disabled"}>Older than 1 day</button>
+          <button type="button" class="secondary" data-job-select-mode="older-7d" ${deletableCount ? "" : "disabled"}>Older than 7 days</button>
+          <button type="button" class="secondary" data-job-select-mode="none">Clear</button>
+          <button type="button" class="danger" data-job-delete-selected ${selectedCount ? "" : "disabled"}>
+            ${selectedCount ? `Delete selected (${selectedCount})` : "Delete selected"}
+          </button>
+        </div>
+      </div>
+      <div class="table-shell">
+        <table class="data-table job-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Job</th>
+              <th>Target</th>
+              <th>Execution</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items
+              .map((item) => {
+                const config = getJobKindConfig(item.kind);
+                const access = config.special_access || null;
+                const deletable = canDeleteJob(item);
+                return `
+                  <tr>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label="Select job ${escapeHtml(item.id)}"
+                        data-job-select="${escapeHtml(item.id)}"
+                        ${isJobSelected(item.id) ? "checked" : ""}
+                        ${deletable ? "" : "disabled"}
+                      />
+                    </td>
+                    <td>
+                      <strong>${escapeHtml(item.kind)}</strong>
+                      ${access ? `<span class="subline">${escapeHtml(access.short_label || access.summary || "")}</span>` : ""}
+                      <span class="subline mono">${escapeHtml(item.id)}</span>
+                    </td>
+                    <td>
+                      ${escapeHtml(item.target_type)}:${escapeHtml(item.target_ref)}
+                      <span class="subline">${escapeHtml(item.source)} by ${escapeHtml(item.requested_by)}</span>
+                    </td>
+                    <td>
+                      ${badge(item.executor, "accent")}
+                      <span class="subline">${escapeHtml(item.target_agent_id || "control-plane-local")}</span>
+                    </td>
+                    <td>
+                      <div class="badge-row">
+                        ${statusBadge(item.status)}
+                        ${statusBadge(item.approval_status)}
+                      </div>
+                      <span class="subline">${deletable ? "Ready to delete" : "Delete available after the job reaches a terminal state."}</span>
+                    </td>
+                    <td>${escapeHtml(formatTimestamp(item.created_at))}</td>
+                    <td>
+                      <div class="table-actions">
+                        <button class="secondary" data-job-log="${escapeHtml(item.id)}">Logs</button>
+                        ${
+                          item.approval_status === "pending"
+                            ? `<button data-job-approve="${escapeHtml(item.id)}">Approve</button>`
+                            : ""
+                        }
+                        ${canCancelJob(item) ? `<button class="danger" data-job-cancel="${escapeHtml(item.id)}">Cancel</button>` : ""}
+                        ${deletable ? `<button class="danger" data-job-delete="${escapeHtml(item.id)}">Delete</button>` : ""}
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function renderApprovals() {
@@ -1495,43 +1634,98 @@ function renderSchedules() {
 }
 
 function renderBackups() {
-  const items = state.data.backups.items;
-  renderTable(
-    "backups-table",
-    ["Kind", "Target", "File", "Size", "Created", "Action"],
-    items.map(
-      (item) => `
-        <tr>
-          <td>${badge(item.kind, "accent")}</td>
-          <td>${escapeHtml(item.target_ref)}</td>
-          <td>
-            <strong>${escapeHtml(item.file_name || item.path || item.target_ref)}</strong>
-            <span class="subline">${item.exists ? "Present" : "Missing or virtual artifact"}</span>
-            <span class="path-pill mono" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
-          </td>
-          <td>${escapeHtml(formatBytes(item.size_bytes))}</td>
-          <td>${escapeHtml(formatTimestamp(item.created_at))}</td>
-          <td>
-            <div class="table-actions">
-              <button
-                class="${item.delete_supported ? "danger" : "secondary"}"
-                data-backup-delete="${escapeHtml(item.id)}"
-                data-backup-delete-supported="${item.delete_supported ? "true" : "false"}"
-              >
-                ${item.delete_supported ? "Delete" : "Remove"}
-              </button>
-            </div>
-          </td>
-        </tr>
-      `
-    ),
-    "No backup artifacts recorded."
-  );
+  const root = document.getElementById("backups-table");
+  const items = getBackupItems();
+  if (!items.length) {
+    root.innerHTML = emptyState("No backup artifacts recorded.");
+    return;
+  }
+
+  const selectedIds = selectedBackupIds();
+  const selectedCount = selectedIds.length;
+  root.innerHTML = `
+    <div class="stack-toolbar">
+      <div class="stack-selection-controls">
+        <div>
+          <strong>${pluralize(selectedCount, "backup")} selected</strong>
+          <span class="subline">Local files will be deleted when managed here. Remote or virtual artifacts will have only their records removed.</span>
+        </div>
+        <div class="table-actions">
+          <button type="button" class="secondary" data-backup-select-mode="all">Select all</button>
+          <button type="button" class="secondary" data-backup-select-mode="none">Clear</button>
+          <button type="button" class="danger" data-backup-delete-selected ${selectedCount ? "" : "disabled"}>
+            ${selectedCount ? `Delete selected (${selectedCount})` : "Delete selected"}
+          </button>
+        </div>
+      </div>
+      <div class="table-shell">
+        <table class="data-table backup-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Kind</th>
+              <th>Target</th>
+              <th>File</th>
+              <th>Size</th>
+              <th>Created</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items
+              .map((item) => {
+                const metadata = item.metadata || {};
+                const artifactLine = [item.artifact_host || metadata.host, item.artifact_source || metadata.source]
+                  .filter(Boolean)
+                  .join(" · ");
+                return `
+                  <tr>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label="Select backup ${escapeHtml(item.file_name || item.path || item.target_ref)}"
+                        data-backup-select="${escapeHtml(item.id)}"
+                        ${isBackupSelected(item.id) ? "checked" : ""}
+                      />
+                    </td>
+                    <td>${badge(item.kind, "accent")}</td>
+                    <td>
+                      ${escapeHtml(item.target_ref)}
+                      ${artifactLine ? `<span class="subline">${escapeHtml(artifactLine)}</span>` : ""}
+                    </td>
+                    <td>
+                      <strong>${escapeHtml(item.file_name || item.path || item.target_ref)}</strong>
+                      <span class="subline">${item.exists ? "Present" : "Missing or virtual artifact"}</span>
+                      <span class="path-pill mono" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span>
+                    </td>
+                    <td>${escapeHtml(formatBytes(item.size_bytes))}</td>
+                    <td>${escapeHtml(formatTimestamp(item.created_at))}</td>
+                    <td>
+                      <div class="table-actions">
+                        <button
+                          class="${item.delete_supported ? "danger" : "secondary"}"
+                          data-backup-delete="${escapeHtml(item.id)}"
+                          data-backup-delete-supported="${item.delete_supported ? "true" : "false"}"
+                        >
+                          ${item.delete_supported ? "Delete" : "Remove"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function renderSettings() {
   const settings = state.data.settings;
   const context = state.data.context || {};
+  const dockerUpdates = settings.docker_updates || {};
   siteChip.textContent = settings.site_name;
   document.title = settings.ui.app_display_name || `${settings.ui.app_name} v${settings.ui.app_version}`;
 
@@ -1541,6 +1735,8 @@ function renderSettings() {
   setInputValue("public-install-script-url", settings.public.install_script_url_override || "");
   setInputValue("public-agent-compose-dir", settings.public.agent_compose_dir || "");
   setInputValue("public-rackpatch-compose-dir", settings.public.rackpatch_compose_dir || "");
+  setInputValue("docker-backup-retention", String(dockerUpdates.backup_retention || 3));
+  document.getElementById("docker-run-backup-commands").checked = Boolean(dockerUpdates.run_backup_commands);
   setInputValue("telegram-chat-ids", settings.telegram.chat_ids_csv || "");
   if (document.activeElement !== document.getElementById("telegram-bot-token")) {
     document.getElementById("telegram-bot-token").value = "";
@@ -1562,6 +1758,8 @@ function renderSettings() {
     `Public repo: ${settings.public.repo_url}@${settings.public.repo_ref}`,
     `Agent compose dir: ${settings.public.agent_compose_dir}`,
     `Rackpatch compose dir: ${settings.public.rackpatch_compose_dir}`,
+    `Docker backup retention: ${dockerUpdates.backup_retention || 3}`,
+    `Docker backup commands: ${dockerUpdates.run_backup_commands ? "enabled" : "disabled"}`,
     `Host maintenance: opt-in via a limited helper command, not broad sudo.`,
   ].join("\n");
 
@@ -1757,14 +1955,20 @@ async function loadDashboard() {
     api("/api/v1/context"),
   ]);
   state.data = { overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context };
+  setSelectedJobs(state.jobSelection);
   setSelectedStacks(state.stackSelection);
+  setSelectedBackups(state.backupSelection);
   renderAll();
 }
 
 async function refreshDashboard() {
   await loadDashboard();
   if (state.selectedJob) {
-    await selectJob(state.selectedJob, true);
+    try {
+      await selectJob(state.selectedJob, true);
+    } catch (_) {
+      clearSelectedJobDetails("Previously selected job was deleted.");
+    }
   }
 }
 
@@ -1789,6 +1993,71 @@ async function cancelJob(jobId) {
   await api(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
   showFlash(`Cancelled job ${shortId(jobId)}.`);
   await refreshDashboard();
+}
+
+async function deleteJob(jobId) {
+  const item = getJobItems().find((job) => job.id === jobId);
+  if (!canDeleteJob(item)) {
+    showFlash("Only completed, failed, or cancelled jobs can be deleted.", "error");
+    return;
+  }
+  if (!window.confirm("Delete this job and its saved event log?")) {
+    return;
+  }
+  const result = await api(`/api/v1/jobs/${jobId}`, { method: "DELETE" });
+  setSelectedJobs(selectedJobIds().filter((id) => id !== jobId));
+  if (state.selectedJob === jobId) {
+    clearSelectedJobDetails("Deleted job log.");
+  }
+  await refreshDashboard();
+  const deletedEvents = Number(result.deleted_event_count || 0);
+  showFlash(
+    `Deleted job ${shortId(jobId)}.${deletedEvents ? ` Removed ${deletedEvents} log event${deletedEvents === 1 ? "" : "s"}.` : ""}`
+  );
+}
+
+async function deleteSelectedJobs() {
+  const selectedIds = selectedJobIds();
+  if (!selectedIds.length) {
+    showFlash("Select at least one finished job first.", "error");
+    return;
+  }
+
+  const message = `Delete ${selectedIds.length} selected job${selectedIds.length === 1 ? "" : "s"} and their saved event logs?`;
+  if (!window.confirm(message)) {
+    return;
+  }
+
+  const results = await Promise.allSettled(
+    selectedIds.map((jobId) => api(`/api/v1/jobs/${jobId}`, { method: "DELETE" }))
+  );
+  const deletedIds = [];
+  let deletedEvents = 0;
+  let failedCount = 0;
+
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      deletedIds.push(selectedIds[index]);
+      deletedEvents += Number(result.value.deleted_event_count || 0);
+    } else {
+      failedCount += 1;
+    }
+  });
+
+  setSelectedJobs(selectedJobIds().filter((id) => !deletedIds.includes(id)));
+  if (state.selectedJob && deletedIds.includes(state.selectedJob)) {
+    clearSelectedJobDetails("Deleted job log.");
+  }
+  await refreshDashboard();
+
+  const summary = [
+    `Deleted ${deletedIds.length} job${deletedIds.length === 1 ? "" : "s"}.`,
+    deletedEvents ? `Removed ${deletedEvents} log event${deletedEvents === 1 ? "" : "s"}.` : "",
+    failedCount ? `${failedCount} job${failedCount === 1 ? "" : "s"} could not be deleted.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  showFlash(summary, failedCount && !deletedIds.length ? "error" : "success");
 }
 
 async function toggleSchedule(scheduleId, enabled) {
@@ -1816,6 +2085,52 @@ async function deleteBackup(backupId, deleteSupported) {
     showFlash(`Removed backup ${shortId(backupId)} record.`);
   }
   await refreshDashboard();
+}
+
+async function deleteSelectedBackups() {
+  const selectedIds = selectedBackupIds();
+  if (!selectedIds.length) {
+    showFlash("Select at least one backup first.", "error");
+    return;
+  }
+
+  const itemsById = new Map(getBackupItems().map((item) => [item.id, item]));
+  const localDeleteCount = selectedIds.filter((id) => itemsById.get(id)?.delete_supported).length;
+  const recordOnlyCount = selectedIds.length - localDeleteCount;
+  const messageParts = [`Delete ${selectedIds.length} selected backup record${selectedIds.length === 1 ? "" : "s"}?`];
+  if (localDeleteCount) {
+    messageParts.push(`${localDeleteCount} local file${localDeleteCount === 1 ? "" : "s"} will also be deleted.`);
+  }
+  if (recordOnlyCount) {
+    messageParts.push(`${recordOnlyCount} remote or virtual artifact${recordOnlyCount === 1 ? "" : "s"} will only be removed from the list.`);
+  }
+  if (!window.confirm(messageParts.join(" "))) {
+    return;
+  }
+
+  const outcomes = {
+    fileDeleted: 0,
+    recordOnly: 0,
+  };
+  for (const backupId of selectedIds) {
+    const result = await api(`/api/v1/backups/${backupId}`, { method: "DELETE" });
+    if (result.file_deleted) {
+      outcomes.fileDeleted += 1;
+    } else {
+      outcomes.recordOnly += 1;
+    }
+  }
+
+  setSelectedBackups([]);
+  await refreshDashboard();
+  const summary = [
+    `Removed ${selectedIds.length} backup record${selectedIds.length === 1 ? "" : "s"}.`,
+    outcomes.fileDeleted ? `${outcomes.fileDeleted} file${outcomes.fileDeleted === 1 ? "" : "s"} deleted.` : "",
+    outcomes.recordOnly ? `${outcomes.recordOnly} record-only removal${outcomes.recordOnly === 1 ? "" : "s"}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  showFlash(summary);
 }
 
 function formatQueueResult(result, fallbackKind, fallbackTarget) {
@@ -1880,6 +2195,20 @@ async function savePublicSettings() {
   showFlash("Saved public repo settings.");
 }
 
+async function saveDockerUpdateSettings() {
+  const retentionValue = document.getElementById("docker-backup-retention").value;
+  await api("/api/v1/settings/docker-updates", {
+    method: "POST",
+    body: JSON.stringify({
+      backup_retention: retentionValue ? Number(retentionValue) : 3,
+      run_backup_commands: document.getElementById("docker-run-backup-commands").checked,
+    }),
+  });
+  await refreshDashboard();
+  document.getElementById("docker-update-settings-result").textContent = "Saved Docker update settings.";
+  showFlash("Saved Docker update settings.");
+}
+
 async function saveTelegramSettings() {
   const payload = {
     chat_ids: document.getElementById("telegram-chat-ids").value,
@@ -1926,8 +2255,10 @@ async function createAgentToken() {
 function logoutUser() {
   localStorage.removeItem("ops_token");
   state.token = "";
-  state.selectedJob = null;
+  clearSelectedJobDetails();
+  state.jobSelection = [];
   state.stackSelection = [];
+  state.backupSelection = [];
   state.expandedStacks = {};
   state.data = null;
   appScreen.classList.add("hidden");
@@ -2125,6 +2456,11 @@ document.getElementById("public-settings-form").addEventListener("submit", async
   await savePublicSettings();
 });
 
+document.getElementById("docker-update-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveDockerUpdateSettings();
+});
+
 document.getElementById("telegram-settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveTelegramSettings();
@@ -2136,9 +2472,21 @@ document.getElementById("agent-token-form").addEventListener("submit", async (ev
 });
 
 appScreen.addEventListener("change", (event) => {
+  const jobSelect = event.target.closest("[data-job-select]");
+  if (jobSelect) {
+    toggleJobSelection(jobSelect.dataset.jobSelect, Boolean(jobSelect.checked));
+    return;
+  }
+
   const stackSelect = event.target.closest("[data-stack-select]");
   if (stackSelect) {
     toggleStackSelection(stackSelect.dataset.stackSelect, Boolean(stackSelect.checked));
+    return;
+  }
+
+  const backupSelect = event.target.closest("[data-backup-select]");
+  if (backupSelect) {
+    toggleBackupSelection(backupSelect.dataset.backupSelect, Boolean(backupSelect.checked));
     return;
   }
 
@@ -2299,6 +2647,45 @@ appScreen.addEventListener("click", async (event) => {
     return;
   }
 
+  const jobDeleteButton = event.target.closest("[data-job-delete]");
+  if (jobDeleteButton) {
+    await deleteJob(jobDeleteButton.dataset.jobDelete);
+    return;
+  }
+
+  const jobSelectMode = event.target.closest("[data-job-select-mode]");
+  if (jobSelectMode) {
+    const now = Date.now();
+    const matchingIds = getJobItems()
+      .filter((item) => canDeleteJob(item))
+      .filter((item) => {
+        if (jobSelectMode.dataset.jobSelectMode === "deletable") {
+          return true;
+        }
+        const createdAt = new Date(item.created_at).getTime();
+        if (!Number.isFinite(createdAt)) {
+          return false;
+        }
+        if (jobSelectMode.dataset.jobSelectMode === "older-1d") {
+          return now - createdAt >= 24 * 60 * 60 * 1000;
+        }
+        if (jobSelectMode.dataset.jobSelectMode === "older-7d") {
+          return now - createdAt >= 7 * 24 * 60 * 60 * 1000;
+        }
+        return false;
+      })
+      .map((item) => item.id);
+    setSelectedJobs(jobSelectMode.dataset.jobSelectMode === "none" ? [] : matchingIds);
+    renderJobs();
+    return;
+  }
+
+  const jobDeleteSelected = event.target.closest("[data-job-delete-selected]");
+  if (jobDeleteSelected) {
+    await deleteSelectedJobs();
+    return;
+  }
+
   const scheduleButton = event.target.closest("[data-schedule-id]");
   if (scheduleButton) {
     await toggleSchedule(scheduleButton.dataset.scheduleId, scheduleButton.dataset.scheduleEnabled === "true");
@@ -2311,6 +2698,23 @@ appScreen.addEventListener("click", async (event) => {
       backupDeleteButton.dataset.backupDelete,
       backupDeleteButton.dataset.backupDeleteSupported === "true"
     );
+    return;
+  }
+
+  const backupSelectMode = event.target.closest("[data-backup-select-mode]");
+  if (backupSelectMode) {
+    if (backupSelectMode.dataset.backupSelectMode === "all") {
+      setSelectedBackups(getBackupItems().map((item) => item.id));
+    } else {
+      setSelectedBackups([]);
+    }
+    renderBackups();
+    return;
+  }
+
+  const backupDeleteSelected = event.target.closest("[data-backup-delete-selected]");
+  if (backupDeleteSelected) {
+    await deleteSelectedBackups();
   }
 });
 

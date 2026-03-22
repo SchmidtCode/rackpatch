@@ -239,7 +239,9 @@ prepare_source_context() {
   local target_dir="$2"
   mkdir -p "${target_dir}/src"
   rm -rf "${target_dir}/src/app"
+  rm -rf "${target_dir}/src/scripts"
   cp -R "${src_root}/app" "${target_dir}/src/app"
+  cp -R "${src_root}/scripts" "${target_dir}/src/scripts"
   cp "${src_root}/Dockerfile.agent" "${target_dir}/src/Dockerfile.agent"
   cp "${src_root}/requirements-rackpatch.txt" "${target_dir}/src/requirements-rackpatch.txt"
 }
@@ -376,11 +378,13 @@ case "${mode}" in
     src_root="$(resolve_source)"
     mkdir -p "${install_dir}"
     rm -rf "${install_dir}/app"
+    rm -rf "${install_dir}/scripts"
     cp -R "${src_root}/app" "${install_dir}/app"
+    cp -R "${src_root}/scripts" "${install_dir}/scripts"
     cp "${src_root}/requirements-rackpatch.txt" "${install_dir}/requirements-rackpatch.txt"
     "${install_dir}/venv/bin/pip" install -r "${install_dir}/requirements-rackpatch.txt"
     if id -u rackpatch-agent >/dev/null 2>&1; then
-      chown -R rackpatch-agent:rackpatch-agent "${install_dir}/app" "${install_dir}/requirements-rackpatch.txt"
+      chown -R rackpatch-agent:rackpatch-agent "${install_dir}/app" "${install_dir}/scripts" "${install_dir}/requirements-rackpatch.txt"
     fi
     systemctl restart rackpatch-agent.service
     echo "rackpatch agent updated in systemd mode under ${install_dir}"

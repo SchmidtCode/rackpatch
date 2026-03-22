@@ -130,6 +130,18 @@ def default_schedules() -> list[dict[str, Any]]:
     stack_names = [stack["name"] for stack in load_defined_stacks() if stack.get("name")]
     return [
         {
+            "name": "Daily Docker Stack Check",
+            "kind": "docker_check",
+            "cron_expr": windows.get("docker_check_daily", "45 5 * * *"),
+            "payload": {
+                "executor": "agent",
+                "target_ref": "full-stack-catalog",
+                "selected_stacks": stack_names,
+                "requires_approval": False,
+                "notify": False,
+            },
+        },
+        {
             "name": "Host Package Check",
             "kind": "package_check",
             "cron_expr": windows.get("host_package_check", "15 5 * * *"),

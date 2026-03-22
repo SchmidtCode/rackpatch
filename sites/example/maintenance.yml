@@ -1,6 +1,8 @@
 windows:
   docker_discovery:
     cron: "0 5 * * *"
+  docker_check_daily:
+    cron: "45 5 * * *"
   host_package_check:
     cron: "15 5 * * *"
   guest_patch_approval:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,6 +25,7 @@ AGENT_JOB_KINDS = PACKAGE_JOB_KINDS | PROXMOX_JOB_KINDS | AGENT_UPDATE_JOB_KINDS
 APPROVAL_REQUIRED = {"docker_update", "package_patch", "proxmox_patch", "proxmox_reboot", "rollback"}
 VALID_EXECUTORS = {"worker", "agent", "auto"}
 CANCELLABLE_STATUSES = {"queued", "pending_approval"}
+DELETABLE_STATUSES = {"completed", "failed", "cancelled"}
 AGENT_JOB_CAPABILITIES = {
     "package_check": {"host-package-check"},
     "package_patch": {"host-package-patch"},
@@ -51,6 +54,36 @@ def append_event(job_id: str, message: str, stream: str = "stdout") -> None:
             "INSERT INTO job_events (job_id, stream, message) VALUES (%s, %s, %s)",
             (job_id, stream, message.rstrip("\n")),
         )
+
+
+def job_is_deletable(status: str | None) -> bool:
+    return str(status or "").strip().lower() in DELETABLE_STATUSES
+
+
+def _delete_job_artifacts(job_id: str, artifact_dir: str | None = None) -> None:
+    jobs_root = config.JOBS_ROOT.resolve(strict=False)
+    candidates = [config.JOBS_ROOT / str(job_id)]
+    if artifact_dir:
+        candidates.append(Path(str(artifact_dir)))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved == jobs_root:
+            continue
+        try:
+            resolved.relative_to(jobs_root)
+        except ValueError:
+            continue
+        if resolved.exists():
+            if resolved.is_dir():
+                shutil.rmtree(resolved, ignore_errors=True)
+            else:
+                resolved.unlink(missing_ok=True)
 
 
 def set_job_status(job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
@@ -85,6 +118,24 @@ def record_backup(job_id: str | None, kind: str, target_ref: str, path: str, met
             """,
             (job_id, kind, target_ref, path, json.dumps(metadata)),
         )
+
+
+def remove_recorded_backups(artifacts: list[dict[str, Any]]) -> None:
+    if not artifacts:
+        return
+    with db.db_cursor() as cur:
+        for artifact in artifacts:
+            path = str(artifact.get("path") or "").strip()
+            if not path:
+                continue
+            cur.execute(
+                "DELETE FROM backups WHERE kind = %s AND target_ref = %s AND path = %s",
+                (
+                    str(artifact.get("kind") or "artifact"),
+                    str(artifact.get("target_ref") or ""),
+                    path,
+                ),
+            )
 
 
 def resolve_agent_id(target_type: str, target_ref: str, payload: dict[str, Any]) -> str | None:
@@ -294,10 +345,6 @@ def _docker_stack_blocker(kind: str, target_ref: str, payload: dict[str, Any]) -
 
     if kind == "docker_check" or bool(payload.get("dry_run", False)):
         return None
-    if bool(stack.get("snapshot_before")):
-        return "This stack requires snapshot_before, which is not available through the agent-only Docker update path."
-    if bool(stack.get("backup_before")):
-        return "This stack requires backup_before, which is not available through the agent-only Docker update path."
     return None
 
 
@@ -617,6 +664,7 @@ def _create_docker_stack_jobs(
     requires_approval = bool(payload.get("requires_approval", kind in APPROVAL_REQUIRED))
     status = "pending_approval" if requires_approval else "queued"
     approval_status = "pending" if requires_approval else "not_required"
+    docker_update_settings = runtime_settings.get_docker_update_settings()
     queued_jobs: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
 
@@ -633,6 +681,9 @@ def _create_docker_stack_jobs(
         child_payload["host"] = stack_catalog.stack_runtime_host(stack)
         child_payload["backup_before"] = bool(stack.get("backup_before"))
         child_payload["snapshot_before"] = bool(stack.get("snapshot_before"))
+        child_payload["backup_commands"] = list(stack.get("backup_commands") or [])
+        child_payload["backup_retention"] = int(docker_update_settings.get("backup_retention") or 3)
+        child_payload["run_backup_commands"] = bool(docker_update_settings.get("run_backup_commands"))
         child_payload["risk"] = str(stack.get("risk") or "")
         child_payload["catalog_source"] = str(stack.get("catalog_source") or "")
         agent_id = resolve_agent_id(target_type, stack_name, child_payload)
@@ -885,6 +936,35 @@ def cancel_job(job_id: str, username: str) -> dict[str, Any] | None:
         append_event(job_id, f"[{now_iso()}] job cancelled by {username}")
         notify.send_job_event(job, "cancelled", result)
     return job
+
+
+def delete_job(job_id: str, username: str) -> tuple[dict[str, Any] | None, str | None]:
+    del username
+    existing = db.fetch_one("SELECT id, status, artifact_dir FROM jobs WHERE id = %s", (job_id,))
+    if not existing:
+        return None, "not_found"
+    if not job_is_deletable(existing.get("status")):
+        return None, "not_deletable"
+
+    event_count_row = db.fetch_one(
+        "SELECT COUNT(*) AS value FROM job_events WHERE job_id = %s",
+        (job_id,),
+    )
+    event_count = int((event_count_row or {}).get("value") or 0)
+    with db.db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM jobs WHERE id = %s AND status = ANY(%s) RETURNING *",
+            (job_id, list(DELETABLE_STATUSES)),
+        )
+        deleted = cur.fetchone()
+    if not deleted:
+        return None, "not_deletable"
+
+    _delete_job_artifacts(str(deleted["id"]), deleted.get("artifact_dir"))
+    return {
+        **deleted,
+        "deleted_event_count": event_count,
+    }, None
 
 
 def approve_job(job_id: str, username: str) -> dict[str, Any] | None:
