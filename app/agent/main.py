@@ -847,6 +847,102 @@ def _rewrite_backup_command(command: str) -> str:
     return command
 
 
+def _container_mount_source(container: Any, destination: str) -> str:
+    for mount in container.attrs.get("Mounts", []):
+        if str(mount.get("Destination") or "") == destination:
+            return str(mount.get("Source") or "")
+    return ""
+
+
+def _schedule_container_agent_update(
+    *,
+    update_command: str,
+    update_mode: str,
+    target_dir: str,
+    log_path: Path,
+    stamp: str,
+    delay_seconds: int,
+) -> dict[str, Any]:
+    if not target_dir:
+        raise RuntimeError(f"{update_mode} agent update is missing update_target_dir")
+
+    client = docker_client()
+    if client is None:
+        raise RuntimeError("docker engine is not available")
+
+    try:
+        current_container = client.containers.get(socket.gethostname())
+        image_tags = list(current_container.image.tags or [])
+        image_ref = image_tags[0] if image_tags else str(current_container.image.id or "")
+        if not image_ref:
+            raise RuntimeError("could not resolve the current agent image")
+
+        state_source = _container_mount_source(current_container, str(STATE_DIR))
+        if not state_source:
+            raise RuntimeError(f"could not resolve the host source for {STATE_DIR}")
+
+        helper_name = f"rackpatch-agent-updater-{stamp}"
+        helper_command = [
+            "bash",
+            "-lc",
+            f"sleep {delay_seconds}; {update_command} >> {shlex.quote(str(log_path))} 2>&1",
+        ]
+        helper = client.containers.run(
+            image_ref,
+            helper_command,
+            auto_remove=True,
+            detach=True,
+            labels={
+                "com.rackpatch.role": "agent-updater",
+                "com.rackpatch.update_mode": update_mode,
+                "com.rackpatch.target_dir": target_dir,
+            },
+            name=helper_name,
+            volumes={
+                str(DOCKER_SOCKET): {"bind": str(DOCKER_SOCKET), "mode": "rw"},
+                state_source: {"bind": str(STATE_DIR), "mode": "rw"},
+                target_dir: {"bind": target_dir, "mode": "rw"},
+            },
+            working_dir=target_dir,
+        )
+        helper_id = str(getattr(helper, "id", "") or "").strip()
+        return {
+            "exit_code": 0,
+            "stdout": "\n".join(
+                [
+                    f"Scheduled agent update for {target_dir} in {update_mode} mode via helper container {helper_name}.",
+                    f"Helper container id: {helper_id[:12] if helper_id else 'unknown'}",
+                    f"Update log: {log_path}",
+                ]
+            ),
+            "scheduled": True,
+            "update_mode": update_mode,
+            "target_dir": target_dir,
+            "log_path": str(log_path),
+            "helper_container_id": helper_id or None,
+            "helper_container_name": helper_name,
+        }
+    finally:
+        client.close()
+
+
+def _run_rackpatch_stack_update(project_dir: str, repo_url: str, release_ref: str) -> tuple[int, str]:
+    script_path = config.resolve_runtime_path(config.SCRIPTS_ROOT / "update-rackpatch.sh")
+    if not script_path.is_file():
+        return 1, f"rackpatch update script is unavailable at {script_path}"
+    command = [
+        "bash",
+        str(script_path),
+        "--install-dir",
+        project_dir,
+        "--repo-url",
+        repo_url,
+    ]
+    if release_ref:
+        command.extend(["--ref", release_ref])
+    return run_command(command)
+
+
 def _run_backup_commands(
     stack_name: str,
     host: str,
@@ -1017,6 +1113,9 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     run_backup_commands = _normalize_bool(payload.get("run_backup_commands"), False)
     backup_commands = [str(item) for item in (payload.get("backup_commands") or []) if str(item).strip()]
     backup_retention = _normalize_positive_int(payload.get("backup_retention"), 3)
+    rackpatch_managed = bool(payload.get("rackpatch_managed"))
+    rackpatch_repo_url = str(payload.get("repo_url") or "").strip()
+    rackpatch_release_ref = str(payload.get("release_ref") or payload.get("target_version") or "").strip()
 
     if backup_requested:
         try:
@@ -1081,32 +1180,59 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
             "pruned_artifacts": pruned_artifacts,
         }
 
-    rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
-    if rc_pull != 0:
+    if rackpatch_managed:
+        if not rackpatch_repo_url:
+            stdout_parts = [out_config]
+            if backup_output:
+                stdout_parts.extend(backup_output)
+            stdout_parts.append("rackpatch-managed stack update is missing repo_url")
+            return {
+                "exit_code": 1,
+                "error": "rackpatch-managed stack update is missing repo_url",
+                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                "artifacts": artifacts,
+                "pruned_artifacts": pruned_artifacts,
+            }
+        rc_update, out_update = _run_rackpatch_stack_update(project_dir, rackpatch_repo_url, rackpatch_release_ref)
         stdout_parts = [out_config]
         if backup_output:
             stdout_parts.extend(backup_output)
-        stdout_parts.append(out_pull)
-        return {
-            "exit_code": rc_pull,
+        stdout_parts.append(out_update)
+        result: dict[str, Any] = {
+            "exit_code": rc_update,
+            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+            "artifacts": artifacts,
+            "pruned_artifacts": pruned_artifacts,
+            "release_ref": rackpatch_release_ref or None,
+            "rackpatch_managed": True,
+        }
+    else:
+        rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
+        if rc_pull != 0:
+            stdout_parts = [out_config]
+            if backup_output:
+                stdout_parts.extend(backup_output)
+            stdout_parts.append(out_pull)
+            return {
+                "exit_code": rc_pull,
+                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                "artifacts": artifacts,
+                "pruned_artifacts": pruned_artifacts,
+            }
+        rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
+        stdout_parts = [out_config]
+        if backup_output:
+            stdout_parts.extend(backup_output)
+        stdout_parts.extend([out_pull, out_up])
+        result = {
+            "exit_code": rc_up,
             "stdout": "\n".join(part for part in stdout_parts if part).strip(),
             "artifacts": artifacts,
             "pruned_artifacts": pruned_artifacts,
         }
-    rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
-    stdout_parts = [out_config]
-    if backup_output:
-        stdout_parts.extend(backup_output)
-    stdout_parts.extend([out_pull, out_up])
-    result: dict[str, Any] = {
-        "exit_code": rc_up,
-        "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-        "artifacts": artifacts,
-        "pruned_artifacts": pruned_artifacts,
-    }
     if rollback_capture:
         result["rollback_capture"] = rollback_capture
-    if rc_up == 0 and before_state is not None:
+    if result["exit_code"] == 0 and before_state is not None:
         try:
             after_state = _capture_stack_state(project_dir, compose_env_files)
             result["update_summary"] = _summarize_stack_changes(before_state, after_state, stack_name, host)
@@ -1122,6 +1248,8 @@ def agent_update(payload: dict[str, Any]) -> dict[str, Any]:
 
     update_mode = str(payload.get("update_mode") or AGENT_MODE or "unknown").strip() or "unknown"
     target_version = str(payload.get("target_version") or payload.get("release_ref") or "").strip()
+    target_dir = str(payload.get("update_target_dir") or "").strip()
+    delay_seconds = int(payload.get("delay_seconds") or 2)
     update_root = STATE_DIR / "updates"
     update_root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1159,13 +1287,32 @@ def agent_update(payload: dict[str, Any]) -> dict[str, Any]:
             "unit_name": unit_name,
         }
 
+    if update_mode in {"compose", "container"}:
+        try:
+            result = _schedule_container_agent_update(
+                update_command=update_command,
+                update_mode=update_mode,
+                target_dir=target_dir,
+                log_path=log_path,
+                stamp=stamp,
+                delay_seconds=delay_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "exit_code": 1,
+                "error": f"failed to schedule {update_mode} agent update helper: {exc}",
+                "stdout": str(exc),
+            }
+        result["target_version"] = target_version or None
+        return result
+
     wrapper_path = update_root / f"agent-update-{stamp}.sh"
     wrapper_path.write_text(
         "\n".join(
             [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                f"sleep {int(payload.get('delay_seconds') or 2)}",
+                f"sleep {delay_seconds}",
                 f"{update_command} >> {shlex.quote(str(log_path))} 2>&1",
                 "",
             ]

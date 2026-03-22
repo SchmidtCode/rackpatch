@@ -42,7 +42,7 @@ fi
 mkdir -p "$(dirname "${install_dir}")"
 
 branch_exists() {
-  git ls-remote --exit-code --heads "${repo_url}" "${ref}" >/dev/null 2>&1
+  git ls-remote --exit-code --heads "${repo_url}" "refs/heads/${ref}" >/dev/null 2>&1
 }
 
 tag_exists() {
@@ -109,7 +109,7 @@ else
   if branch_exists; then
     git -C "${install_dir}" checkout -B "${ref}" "origin/${ref}"
   elif tag_exists; then
-    git -C "${install_dir}" checkout --detach "tags/${ref}"
+    git -C "${install_dir}" checkout --detach "refs/tags/${ref}"
   else
     git -C "${install_dir}" checkout "${ref}"
   fi

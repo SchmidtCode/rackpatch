@@ -202,6 +202,10 @@ def _dedupe(values: list[str]) -> list[str]:
     return selected
 
 
+def _normalize_dir(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
 def _split_targets(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -283,6 +287,31 @@ def _resolve_docker_update_targets(target_ref: str, payload: dict[str, Any]) -> 
     if window == "all":
         return stacks
     return [stack for stack in stacks if str(stack.get("update_mode") or "") == window]
+
+
+def _docker_update_release_target(public_settings: dict[str, Any]) -> tuple[str, str]:
+    latest = releases.fetch_latest_release(str(public_settings.get("repo_url") or config.PUBLIC_REPO_URL))
+    latest_version = str(latest.get("version") or "").strip()
+    target_ref = latest_version or str(public_settings.get("repo_ref") or config.PUBLIC_REPO_REF)
+    target_version = latest_version or target_ref
+    return target_ref, target_version
+
+
+def _rackpatch_stack_update_fields(stack: dict[str, Any], public_settings: dict[str, Any]) -> dict[str, Any]:
+    project_dir = _normalize_dir(stack_catalog.stack_project_dir(stack))
+    rackpatch_compose_dir = _normalize_dir(
+        public_settings.get("rackpatch_compose_dir") or config.PUBLIC_RACKPATCH_COMPOSE_DIR
+    )
+    if not project_dir or not rackpatch_compose_dir or project_dir != rackpatch_compose_dir:
+        return {}
+
+    release_ref, target_version = _docker_update_release_target(public_settings)
+    return {
+        "rackpatch_managed": True,
+        "repo_url": str(public_settings.get("repo_url") or config.PUBLIC_REPO_URL).strip(),
+        "release_ref": release_ref,
+        "target_version": target_version,
+    }
 
 
 def _resolve_agent_update_targets(target_ref: str, payload: dict[str, Any]) -> list[str]:
@@ -665,6 +694,7 @@ def _create_docker_stack_jobs(
     status = "pending_approval" if requires_approval else "queued"
     approval_status = "pending" if requires_approval else "not_required"
     docker_update_settings = runtime_settings.get_docker_update_settings()
+    public_settings = runtime_settings.get_public_settings()
     queued_jobs: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
 
@@ -686,6 +716,8 @@ def _create_docker_stack_jobs(
         child_payload["run_backup_commands"] = bool(docker_update_settings.get("run_backup_commands"))
         child_payload["risk"] = str(stack.get("risk") or "")
         child_payload["catalog_source"] = str(stack.get("catalog_source") or "")
+        if kind == "docker_update":
+            child_payload.update(_rackpatch_stack_update_fields(stack, public_settings))
         agent_id = resolve_agent_id(target_type, stack_name, child_payload)
         error = _agent_capability_error(kind, stack_name, child_payload, agent_id)
         if error:
@@ -826,6 +858,10 @@ def _create_agent_update_jobs(
         child_payload["target_version"] = target_version
         child_payload["update_mode"] = str(item.get("mode") or "")
         child_payload["target_agent_name"] = str(item.get("agent_name") or "")
+        if str(item.get("mode") or "") == "compose":
+            child_payload["update_target_dir"] = str(item.get("compose_dir") or "")
+        elif str(item.get("mode") or "") == "container":
+            child_payload["update_target_dir"] = str(item.get("install_dir") or "")
         queued_jobs.append(
             _insert_job(
                 kind=kind,

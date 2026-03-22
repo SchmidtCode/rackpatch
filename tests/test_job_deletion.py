@@ -112,5 +112,48 @@ class DeleteJobTests(unittest.TestCase):
             self.assertTrue(outside_dir.exists())
 
 
+class RackpatchStackUpdateTests(unittest.TestCase):
+    def test_rackpatch_stack_update_fields_use_latest_release_for_control_plane_stack(self) -> None:
+        public_settings = {
+            "repo_url": "https://github.com/SchmidtCode/rackpatch.git",
+            "repo_ref": "main",
+            "rackpatch_compose_dir": "/srv/compose/rackpatch",
+        }
+        stack = {
+            "name": "rackpatch",
+            "project_dir": "/srv/compose/rackpatch",
+        }
+
+        with patch.object(jobs.releases, "fetch_latest_release", return_value={"version": "v0.3.8"}):
+            fields = jobs._rackpatch_stack_update_fields(stack, public_settings)
+
+        self.assertEqual(
+            fields,
+            {
+                "rackpatch_managed": True,
+                "repo_url": "https://github.com/SchmidtCode/rackpatch.git",
+                "release_ref": "v0.3.8",
+                "target_version": "v0.3.8",
+            },
+        )
+
+    def test_rackpatch_stack_update_fields_ignore_other_stacks(self) -> None:
+        public_settings = {
+            "repo_url": "https://github.com/SchmidtCode/rackpatch.git",
+            "repo_ref": "main",
+            "rackpatch_compose_dir": "/srv/compose/rackpatch",
+        }
+        stack = {
+            "name": "dashboard",
+            "project_dir": "/srv/compose/dashboard",
+        }
+
+        with patch.object(jobs.releases, "fetch_latest_release") as fetch_latest_release:
+            fields = jobs._rackpatch_stack_update_fields(stack, public_settings)
+
+        self.assertEqual(fields, {})
+        fetch_latest_release.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

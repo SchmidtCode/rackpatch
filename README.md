@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
-Version in this repo: `v0.3.7`
+Version in this repo: `v0.3.9`
 
 ## What rackpatch does
 
@@ -19,6 +19,7 @@ Version in this repo: `v0.3.7`
 - Published GHCR images are the default deployment path for the control plane and containerized agents.
 - `/api/v1/context` and `/api/v1/job-kinds` expose machine-readable setup and job metadata.
 - Agent-driven Docker updates support lightweight pre-update stack backups with retention controls.
+- Compose and container agent self-updates now run from a helper container so agents do not replace themselves mid-update and fall offline.
 
 ## Runtime services
 

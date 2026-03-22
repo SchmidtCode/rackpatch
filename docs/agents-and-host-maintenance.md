@@ -17,27 +17,32 @@ Agent packaging modes:
 - `container`: installs under `/opt/rackpatch-agent` and runs a compose-managed published `rackpatch-agent` image
 - `systemd`: installs under `/opt/rackpatch-agent` and runs `rackpatch-agent.service`
 
-Compose and container agent updates pull the configured published tag by default. Existing source-built compose or container agent installs can still update in place, but fresh installs no longer need a local Docker build step.
+Compose and container agent updates pull the configured published tag by default. Existing source-built compose or container agent installs can still update in place, but fresh installs no longer need a local Docker build step. Compose and container self-updates now run from a short-lived helper container so the running agent does not try to replace its own container in place.
 
 ## Example install and update commands
 
 Example container install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.7/scripts/install-agent.sh | bash -s -- \
+RELEASE_TAG=v0.3.9
+RELEASE_VERSION="${RELEASE_TAG#v}"
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/install-agent.sh" | bash -s -- \
   --server-url http://YOUR-RACKPATCH-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
-  --image ghcr.io/schmidtcode/rackpatch-agent:0.3.7
+  --image "ghcr.io/schmidtcode/rackpatch-agent:${RELEASE_VERSION}"
 ```
 
 Example stack update:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.7/scripts/update-rackpatch.sh | bash -s -- \
+RELEASE_TAG=v0.3.9
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/update-rackpatch.sh" | bash -s -- \
   --install-dir /srv/compose/rackpatch \
   --repo-url https://github.com/SchmidtCode/rackpatch.git \
-  --ref v0.3.7
+  --ref "${RELEASE_TAG}"
 ```
 
 ## Host-maintenance helper
@@ -47,22 +52,26 @@ Host maintenance is a separate opt-in step. The base agent install stays focused
 Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.7/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+RELEASE_TAG=v0.3.9
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
   --mode compose \
   --preset packages \
   --compose-dir /srv/compose/rackpatch-agent \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref v0.3.7
+  --install-ref "${RELEASE_TAG}"
 ```
 
 Example host-maintenance enablement for Proxmox nodes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/v0.3.7/scripts/enable-agent-host-maintenance.sh | sudo bash -s -- \
+RELEASE_TAG=v0.3.9
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
   --mode systemd \
   --preset proxmox \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
-  --install-ref v0.3.7
+  --install-ref "${RELEASE_TAG}"
 ```
 
 If you want a custom mix, pass `--allow-actions package_check,package_patch,proxmox_patch,proxmox_reboot` with only the actions you want that node to advertise.
@@ -78,6 +87,8 @@ docker compose --profile self-agent up -d agent
 ```
 
 Set `RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN` and `RACKPATCH_SELF_AGENT_NAME` in `.env` so that the self-agent enrolls as the matching inventory host, for example `core-vm`.
+
+If that self-agent reports the same compose directory as `RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR`, the normal `Stacks` page live-update flow can update rackpatch itself. Those jobs use the release-aware rackpatch updater under the hood, so a new GitHub release can be applied from the standard stack update controls instead of a separate manual shell step.
 
 ## Live action behavior
 

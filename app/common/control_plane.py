@@ -273,6 +273,8 @@ def build_agent_update_plan(
                 "agent_name": str(agent.get("name") or ""),
                 "display_name": str(agent.get("display_name") or ""),
                 "mode": mode or "unknown",
+                "compose_dir": str(metadata.get("compose_dir") or ""),
+                "install_dir": str(metadata.get("install_dir") or ""),
                 "command": command,
                 "capabilities": [str(value) for value in (agent.get("capabilities") or []) if str(value).strip()],
                 "reason": reason or "",

@@ -15,7 +15,7 @@ GitHub automation builds and publishes the three custom images, and the tracked 
 GitHub automation has two jobs under `.github/workflows/`:
 
 - `ci.yml`: runs `make validate` and verifies that the three custom images build on pull requests and pushes to `main`
-- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `v0.3.7`
+- `publish-images.yml`: publishes versioned images to GitHub Container Registry when you push a tag like `vX.Y.Z`
 
 Published image names:
 
@@ -26,16 +26,18 @@ Published image names:
 Suggested first publish flow:
 
 ```bash
+RELEASE_TAG=vX.Y.Z
+
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.7 -m "v0.3.7"
-git push origin refs/tags/v0.3.7
+git tag -a "${RELEASE_TAG}" -m "${RELEASE_TAG}"
+git push origin "refs/tags/${RELEASE_TAG}"
 ```
 
 After the first publish, open the package pages in GitHub and set them to public if you want anonymous pulls from GHCR.
 
-## Release flow for `v0.3.7`
+## Release flow for `vX.Y.Z`
 
 If `origin` is already configured, confirm it first:
 
@@ -46,19 +48,23 @@ git remote -v
 Push the release branch:
 
 ```bash
+RELEASE_TAG=vX.Y.Z
+
 git fetch origin
-git switch -c release/v0.3.7
-git push -u origin release/v0.3.7
+git switch -c "release/${RELEASE_TAG}"
+git push -u origin "release/${RELEASE_TAG}"
 ```
 
-Open a pull request from `release/v0.3.7` into `main`. After the PR merges:
+Open a pull request from `release/${RELEASE_TAG}` into `main`. After the PR merges:
 
 ```bash
+RELEASE_TAG=vX.Y.Z
+
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git tag -a v0.3.7 -m "v0.3.7"
-git push origin refs/tags/v0.3.7
+git tag -a "${RELEASE_TAG}" -m "${RELEASE_TAG}"
+git push origin "refs/tags/${RELEASE_TAG}"
 ```
 
 Suggested GitHub release notes:
@@ -71,3 +77,4 @@ Suggested GitHub release notes:
 - GHCR-backed default deployments plus a tracked `docker-compose.dev.yml` for local source builds.
 - Safer public GitHub publishing with `make release-check`.
 - Docker live updates now support lightweight stack-directory backups with retention controls.
+- Compose and container agent self-updates now launch from a helper container so queued agent updates do not take agents offline mid-replacement.
