@@ -492,9 +492,14 @@ def _path_is_within(root: str, candidate: str) -> bool:
     normalized_candidate = _normalize_path(candidate)
     if not normalized_root or not normalized_candidate:
         return False
-    if normalized_root == "/":
-        return normalized_candidate.startswith("/")
-    return normalized_candidate == normalized_root or normalized_candidate.startswith(f"{normalized_root}/")
+
+    root_path = Path(normalized_root).expanduser().resolve(strict=False)
+    candidate_path = Path(normalized_candidate).expanduser().resolve(strict=False)
+    try:
+        candidate_path.relative_to(root_path)
+    except ValueError:
+        return False
+    return True
 
 
 def _project_dir_access_error(project_dir: str) -> str | None:
@@ -1393,7 +1398,13 @@ def main() -> int:
             if job:
                 job_id = str(job["id"])
                 post_event(state, job_id, f"agent {AGENT_NAME} executing {job['kind']}")
-                status, result = execute_job(job)
+                try:
+                    status, result = execute_job(job)
+                except Exception as exc:  # noqa: BLE001
+                    message = f"unexpected agent job error: {exc}"
+                    status = "failed"
+                    result = {"error": message, "stdout": message}
+                    post_event(state, job_id, message, stream="stderr")
                 for line in str(result.get("stdout", "")).splitlines():
                     if line.strip():
                         post_event(state, job_id, line)

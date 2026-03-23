@@ -1,31 +1,14 @@
-const state = {
-  token: localStorage.getItem("ops_token") || "",
-  selectedJob: null,
-  currentPage: "overview",
-  installPreviewMode: "compose",
-  jobFormKind: null,
-  jobOptionValues: {},
-  jobLogExpanded: false,
-  jobSelection: [],
-  stackSelection: [],
-  backupSelection: [],
-  expandedStacks: {},
-  stackUpdateRequiresApproval: true,
-  data: null,
-  flashTimer: null,
-};
+import { createApiClient } from "./api.js";
+import { createDelegatedHandler, debounce, withAsyncAction } from "./events.js";
+import { createState, EMPTY_DOCKER_UPDATES, normalizeSelection, PAGE_META } from "./store.js";
 
-const PAGE_META = {
-  overview: { kicker: "Control Plane", title: "Overview" },
-  stacks: { kicker: "Compose", title: "Stacks" },
-  hosts: { kicker: "Inventory", title: "Hosts" },
-  agents: { kicker: "Polling Agents", title: "Agents" },
-  jobs: { kicker: "Execution", title: "Jobs" },
-  approvals: { kicker: "Change Control", title: "Approvals" },
-  schedules: { kicker: "Automation", title: "Schedules" },
-  backups: { kicker: "Artifacts", title: "Backups" },
-  settings: { kicker: "Configuration", title: "Settings" },
-};
+const state = createState();
+const sessionState = state.session;
+const uiState = state.ui;
+const jobFormState = state.jobForm;
+const selectionState = state.selection;
+const entitiesState = state.entities;
+const api = createApiClient(() => sessionState.token);
 
 const loginScreen = document.getElementById("login-screen");
 const appScreen = document.getElementById("app-screen");
@@ -90,7 +73,7 @@ function applyAppVersion(version = {}) {
 }
 
 function getJobKindItems() {
-  return state.data?.jobKinds?.items || state.data?.context?.job_kinds || [];
+  return entitiesState.jobKinds?.items || entitiesState.context?.job_kinds || [];
 }
 
 function populateJobKindSelect() {
@@ -101,7 +84,7 @@ function populateJobKindSelect() {
     return;
   }
 
-  const current = state.jobFormKind || jobKindSelect.value;
+  const current = jobFormState.kind || jobKindSelect.value;
   jobKindSelect.innerHTML = items
     .map((item) => `<option value="${escapeHtml(item.kind)}">${escapeHtml(item.label || item.kind)}</option>`)
     .join("");
@@ -113,27 +96,6 @@ function populateJobKindSelect() {
   jobKindSelect.value = items[0].kind;
 }
 
-function apiHeaders() {
-  return state.token
-    ? { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" }
-    : { "Content-Type": "application/json" };
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...apiHeaders(),
-      ...(options.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(parseApiError(text, response.status));
-  }
-  return response.json();
-}
-
 async function loadAppVersion() {
   try {
     const version = await api("/api/v1/version");
@@ -143,24 +105,6 @@ async function loadAppVersion() {
     applyAppVersion();
     return null;
   }
-}
-
-function parseApiError(text, status) {
-  if (!text) {
-    return `Request failed (${status})`;
-  }
-  try {
-    const payload = JSON.parse(text);
-    if (typeof payload.detail === "string") {
-      return payload.detail;
-    }
-    if (Array.isArray(payload.detail) && payload.detail.length) {
-      return payload.detail.map((item) => item.msg || item.detail || "Request failed").join(", ");
-    }
-  } catch (_) {
-    return text;
-  }
-  return text;
 }
 
 function escapeHtml(value) {
@@ -243,13 +187,12 @@ function pluralize(count, singular, plural = `${singular}s`) {
 }
 
 function getDockerUpdateItems() {
-  return state.data?.dockerUpdates?.items || [];
+  return entitiesState.dockerUpdates?.items || [];
 }
 
 function selectedStackNames() {
-  const available = new Set(getDockerUpdateItems().map((item) => item.name));
-  state.stackSelection = state.stackSelection.filter((name) => available.has(name));
-  return [...state.stackSelection];
+  const available = getDockerUpdateItems().map((item) => item.name);
+  return normalizeSelection(selectionState.stacks, available);
 }
 
 function isStackSelected(name) {
@@ -257,12 +200,10 @@ function isStackSelected(name) {
 }
 
 function setSelectedStacks(names) {
-  const allowed = new Set(
-    getDockerUpdateItems()
-      .filter((item) => item.selection_eligible)
-      .map((item) => item.name)
-  );
-  state.stackSelection = [...new Set((names || []).filter((name) => allowed.has(name)))];
+  const allowed = getDockerUpdateItems()
+    .filter((item) => item.selection_eligible)
+    .map((item) => item.name);
+  selectionState.stacks = normalizeSelection(names, allowed);
 }
 
 function toggleStackSelection(name, checked) {
@@ -277,11 +218,11 @@ function toggleStackSelection(name, checked) {
 }
 
 function getBackupItems() {
-  return state.data?.backups?.items || [];
+  return entitiesState.backups?.items || [];
 }
 
 function getJobItems() {
-  return state.data?.jobs?.items || [];
+  return entitiesState.jobs?.items || [];
 }
 
 function canDeleteJob(job) {
@@ -289,9 +230,10 @@ function canDeleteJob(job) {
 }
 
 function selectedJobIds() {
-  const allowed = new Set(getJobItems().filter((item) => canDeleteJob(item)).map((item) => item.id));
-  state.jobSelection = state.jobSelection.filter((id) => allowed.has(id));
-  return [...state.jobSelection];
+  const allowed = getJobItems()
+    .filter((item) => canDeleteJob(item))
+    .map((item) => item.id);
+  return normalizeSelection(selectionState.jobs, allowed);
 }
 
 function isJobSelected(id) {
@@ -299,8 +241,10 @@ function isJobSelected(id) {
 }
 
 function setSelectedJobs(ids) {
-  const allowed = new Set(getJobItems().filter((item) => canDeleteJob(item)).map((item) => item.id));
-  state.jobSelection = [...new Set((ids || []).filter((id) => allowed.has(id)))];
+  const allowed = getJobItems()
+    .filter((item) => canDeleteJob(item))
+    .map((item) => item.id);
+  selectionState.jobs = normalizeSelection(ids, allowed);
 }
 
 function toggleJobSelection(id, checked) {
@@ -315,9 +259,8 @@ function toggleJobSelection(id, checked) {
 }
 
 function selectedBackupIds() {
-  const available = new Set(getBackupItems().map((item) => item.id));
-  state.backupSelection = state.backupSelection.filter((id) => available.has(id));
-  return [...state.backupSelection];
+  const available = getBackupItems().map((item) => item.id);
+  return normalizeSelection(selectionState.backups, available);
 }
 
 function isBackupSelected(id) {
@@ -325,8 +268,8 @@ function isBackupSelected(id) {
 }
 
 function setSelectedBackups(ids) {
-  const allowed = new Set(getBackupItems().map((item) => item.id));
-  state.backupSelection = [...new Set((ids || []).filter((id) => allowed.has(id)))];
+  const allowed = getBackupItems().map((item) => item.id);
+  selectionState.backups = normalizeSelection(ids, allowed);
 }
 
 function toggleBackupSelection(id, checked) {
@@ -341,7 +284,7 @@ function toggleBackupSelection(id, checked) {
 }
 
 function toggleStackDetails(name) {
-  state.expandedStacks[name] = !state.expandedStacks[name];
+  uiState.expandedStacks[name] = !uiState.expandedStacks[name];
   renderStacks();
 }
 
@@ -419,15 +362,15 @@ function showFlash(message, type = "success") {
   flash.textContent = message;
   flash.classList.remove("hidden", "success", "error");
   flash.classList.add(type);
-  clearTimeout(state.flashTimer);
-  state.flashTimer = window.setTimeout(() => {
+  clearTimeout(uiState.flashTimer);
+  uiState.flashTimer = window.setTimeout(() => {
     flash.classList.add("hidden");
   }, 3500);
 }
 
 function syncPageFromHash() {
   const page = window.location.hash.replace(/^#/, "") || "overview";
-  state.currentPage = PAGE_META[page] ? page : "overview";
+  uiState.currentPage = PAGE_META[page] ? page : "overview";
   applyPageState();
 }
 
@@ -435,23 +378,23 @@ function setPage(page) {
   if (!PAGE_META[page]) {
     return;
   }
-  state.currentPage = page;
+  uiState.currentPage = page;
   window.location.hash = page;
   applyPageState();
 }
 
 function applyPageState() {
-  const meta = PAGE_META[state.currentPage] || PAGE_META.overview;
+  const meta = PAGE_META[uiState.currentPage] || PAGE_META.overview;
   pageTitle.textContent = meta.title;
   pageKicker.textContent = meta.kicker;
 
   document.querySelectorAll("[data-page]").forEach((node) => {
-    node.classList.toggle("active", node.dataset.page === state.currentPage);
+    node.classList.toggle("active", node.dataset.page === uiState.currentPage);
   });
   document.querySelectorAll("[data-page-link]").forEach((node) => {
-    node.classList.toggle("active", node.dataset.pageLink === state.currentPage);
+    node.classList.toggle("active", node.dataset.pageLink === uiState.currentPage);
   });
-  const activeLink = document.querySelector(`[data-page-link="${state.currentPage}"]`);
+  const activeLink = document.querySelector(`[data-page-link="${uiState.currentPage}"]`);
   if (activeLink && window.matchMedia("(max-width: 760px)").matches) {
     activeLink.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   }
@@ -634,7 +577,7 @@ function getJobKindConfig(kind) {
 
 function getJobStacksForKind(kind) {
   const config = getJobKindConfig(kind);
-  const stacks = [...(state.data?.stacks?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
+  const stacks = [...(entitiesState.stacks?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
   if (!["stack_multi", "stack_single"].includes(config.mode)) {
     return [];
   }
@@ -643,7 +586,7 @@ function getJobStacksForKind(kind) {
 
 function getJobHostsForKind(kind) {
   const config = getJobKindConfig(kind);
-  const hosts = [...(state.data?.hosts?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
+  const hosts = [...(entitiesState.hosts?.items || [])].sort((left, right) => left.name.localeCompare(right.name));
   if (config.mode !== "host_multi") {
     return [];
   }
@@ -661,12 +604,28 @@ function getJobHostsForKind(kind) {
   });
 }
 
-function getSelectedJobStacks() {
-  return Array.from(jobStackOptions.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+function getSelectedJobStacks(kind = jobFormState.kind || jobKindSelect.value) {
+  const allowed = getJobStacksForKind(kind).map((stack) => stack.name);
+  return normalizeSelection(jobFormState.selectedStacks, allowed);
 }
 
-function getSelectedJobHosts() {
-  return Array.from(jobHostOptions.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+function setSelectedJobStacks(names, kind = jobFormState.kind || jobKindSelect.value) {
+  const allowed = getJobStacksForKind(kind).map((stack) => stack.name);
+  jobFormState.selectedStacks = normalizeSelection(names, allowed);
+}
+
+function getSelectedJobHosts(kind = jobFormState.kind || jobKindSelect.value) {
+  const allowed = getJobHostsForKind(kind)
+    .filter((host) => getJobHostAccess(host, kind).eligible)
+    .map((host) => host.name);
+  return normalizeSelection(jobFormState.selectedHosts, allowed);
+}
+
+function setSelectedJobHosts(names, kind = jobFormState.kind || jobKindSelect.value) {
+  const allowed = getJobHostsForKind(kind)
+    .filter((host) => getJobHostAccess(host, kind).eligible)
+    .map((host) => host.name);
+  jobFormState.selectedHosts = normalizeSelection(names, allowed);
 }
 
 function getJobOptionDefinitions(kind) {
@@ -678,7 +637,7 @@ function getJobOptionInputId(name) {
 }
 
 function getStoredJobOptionValues(kind) {
-  return state.jobOptionValues[kind] || {};
+  return jobFormState.optionValues[kind] || {};
 }
 
 function getRenderedJobOptionValues(kind) {
@@ -702,14 +661,14 @@ function getRenderedJobOptionValues(kind) {
 }
 
 function storeRenderedJobOptionValues(kind) {
-  state.jobOptionValues[kind] = getRenderedJobOptionValues(kind);
+  jobFormState.optionValues[kind] = getRenderedJobOptionValues(kind);
 }
 
 function renderJobOptions(kind, resetOptions = false) {
   const config = getJobKindConfig(kind);
   const fields = getJobOptionDefinitions(kind);
   if (resetOptions) {
-    delete state.jobOptionValues[kind];
+    delete jobFormState.optionValues[kind];
   }
   const currentValues = { ...config.defaults, ...getStoredJobOptionValues(kind) };
 
@@ -784,7 +743,7 @@ function setJobHostMenu(open) {
 
 function updateJobStackSelectionState(kind) {
   const stacks = getJobStacksForKind(kind);
-  const selected = getSelectedJobStacks();
+  const selected = getSelectedJobStacks(kind);
   const selectedPreview = selected.slice(0, 3).join(", ");
 
   jobStackToggle.disabled = stacks.length === 0;
@@ -815,9 +774,10 @@ function updateJobStackSelectionState(kind) {
 function renderJobStackOptions(kind, preserveSelection = true) {
   const config = getJobKindConfig(kind);
   const stacks = getJobStacksForKind(kind);
-  const currentSelection = getSelectedJobStacks();
+  const currentSelection = getSelectedJobStacks(kind);
   const shouldSelectAll = !preserveSelection && config.default_select_all;
   const previousSelection = shouldSelectAll ? new Set(stacks.map((stack) => stack.name)) : new Set(currentSelection);
+  setSelectedJobStacks([...previousSelection], kind);
 
   if (!stacks.length) {
     jobStackOptions.innerHTML = emptyState("No matching stacks.");
@@ -851,7 +811,7 @@ function updateJobHostSelectionState(kind) {
   const eligibleHosts = hosts.filter((host) => getJobHostAccess(host, kind).eligible);
   const blockedCount = Math.max(hosts.length - eligibleHosts.length, 0);
   const access = getJobSpecialAccess(kind);
-  const selected = getSelectedJobHosts();
+  const selected = getSelectedJobHosts(kind);
   const selectedPreview = selected.slice(0, 3).join(", ");
 
   jobHostToggle.disabled = hosts.length === 0;
@@ -889,7 +849,8 @@ function updateJobHostSelectionState(kind) {
 
 function renderJobHostOptions(kind, preserveSelection = true) {
   const hosts = getJobHostsForKind(kind);
-  const previousSelection = preserveSelection ? new Set(getSelectedJobHosts()) : new Set();
+  const previousSelection = preserveSelection ? new Set(getSelectedJobHosts(kind)) : new Set();
+  setSelectedJobHosts([...previousSelection], kind);
 
   if (!hosts.length) {
     jobHostOptions.innerHTML = emptyState("No matching hosts.");
@@ -925,7 +886,7 @@ function renderJobHostOptions(kind, preserveSelection = true) {
 function syncJobForm(kind = jobKindSelect.value, { resetOptions = false, preserveSelection = true } = {}) {
   const config = getJobKindConfig(kind);
   const access = getJobSpecialAccess(kind);
-  state.jobFormKind = kind;
+  jobFormState.kind = kind;
   jobTargetSummary.textContent = [config.summary, access?.summary].filter(Boolean).join(" ");
 
   const showStackPicker = ["stack_multi", "stack_single"].includes(config.mode);
@@ -950,8 +911,10 @@ function syncJobForm(kind = jobKindSelect.value, { resetOptions = false, preserv
   if (showManualTarget) {
     jobManualTargetLabel.textContent = config.manual_label;
     jobManualTargetInput.placeholder = config.manual_placeholder;
+    jobManualTargetInput.value = jobFormState.manualTarget;
   } else {
     jobManualTargetInput.value = "";
+    jobFormState.manualTarget = "";
   }
 
   renderJobOptions(kind, resetOptions);
@@ -964,7 +927,7 @@ function buildJobRequest() {
   let targetRef = "";
 
   if (config.mode === "stack_multi") {
-    const selectedStacks = getSelectedJobStacks();
+    const selectedStacks = getSelectedJobStacks(kind);
     const availableStacks = getJobStacksForKind(kind);
     if (!selectedStacks.length) {
       throw new Error("Select at least one stack.");
@@ -980,13 +943,13 @@ function buildJobRequest() {
       }
     }
   } else if (config.mode === "stack_single") {
-    const selectedStacks = getSelectedJobStacks();
+    const selectedStacks = getSelectedJobStacks(kind);
     if (selectedStacks.length !== 1) {
       throw new Error("Select exactly one stack.");
     }
     targetRef = selectedStacks[0];
   } else if (config.mode === "host_multi") {
-    const selectedHosts = getSelectedJobHosts();
+    const selectedHosts = getSelectedJobHosts(kind);
     const availableHosts = getJobHostsForKind(kind);
     if (!selectedHosts.length) {
       throw new Error("Select at least one host.");
@@ -1011,7 +974,7 @@ function buildJobRequest() {
       payload.limit = targetRef;
     }
   } else {
-    targetRef = jobManualTargetInput.value.trim();
+    targetRef = jobFormState.manualTarget.trim();
     if (!targetRef) {
       throw new Error(`Enter a ${String(config.manual_label || "target").toLowerCase()}.`);
     }
@@ -1024,12 +987,12 @@ function buildJobRequest() {
 }
 
 function syncJobLogPanel() {
-  jobLogPanel.classList.toggle("expanded", state.jobLogExpanded);
-  jobLogExpandButton.textContent = state.jobLogExpanded ? "Collapse" : "Expand";
+  jobLogPanel.classList.toggle("expanded", uiState.jobLogExpanded);
+  jobLogExpandButton.textContent = uiState.jobLogExpanded ? "Collapse" : "Expand";
 }
 
 function clearSelectedJobDetails(message = "No job selected.") {
-  state.selectedJob = null;
+  uiState.selectedJob = null;
   jobResult.innerHTML = "";
   jobEvents.textContent = message;
 }
@@ -1039,13 +1002,13 @@ function canCancelJob(job) {
 }
 
 function renderInstallPreviews() {
-  if (!state.data?.settings) {
+  if (!entitiesState.settings) {
     return;
   }
-  const blocks = state.data.settings.agent_install || {};
-  const helperBlocks = state.data.settings.agent_host_maintenance || {};
-  const selected = blocks[state.installPreviewMode] || blocks.compose || "";
-  const helper = helperBlocks[state.installPreviewMode] || helperBlocks.compose || "";
+  const blocks = entitiesState.settings.agent_install || {};
+  const helperBlocks = entitiesState.settings.agent_host_maintenance || {};
+  const selected = blocks[uiState.installPreviewMode] || blocks.compose || "";
+  const helper = helperBlocks[uiState.installPreviewMode] || helperBlocks.compose || "";
   const preview = [
     "# Base agent install",
     selected,
@@ -1058,15 +1021,15 @@ function renderInstallPreviews() {
   document.getElementById("overview-install").textContent = preview;
   document.getElementById("settings-install").textContent = preview;
   document.querySelectorAll("[data-install-mode]").forEach((node) => {
-    node.classList.toggle("active", node.dataset.installMode === state.installPreviewMode);
+    node.classList.toggle("active", node.dataset.installMode === uiState.installPreviewMode);
   });
 }
 
 function renderOverview() {
-  const overview = state.data.overview;
-  const jobs = state.data.jobs.items;
+  const overview = entitiesState.overview;
+  const jobs = entitiesState.jobs.items;
   const approvals = jobs.filter((item) => item.approval_status === "pending");
-  const release = state.data.settings.release || {};
+  const release = entitiesState.settings.release || {};
 
   const stats = [
     ["Agents", overview.counts.agents],
@@ -1151,7 +1114,7 @@ function renderOverview() {
 }
 
 function renderStacks() {
-  const payload = state.data?.dockerUpdates || { summary: {}, items: [] };
+  const payload = entitiesState.dockerUpdates || { summary: {}, items: [] };
   const items = Array.isArray(payload.items) ? payload.items : [];
   const summary = payload.summary || {};
   const selected = selectedStackNames();
@@ -1190,7 +1153,7 @@ function renderStacks() {
             <button type="button" data-stack-update-selected${buttonStateAttrs(!canUpdateSelected, "Select at least one eligible outdated stack first.")}>Update Selected</button>
           </div>
           <label class="checkbox-row">
-            <input type="checkbox" data-stack-update-approval ${state.stackUpdateRequiresApproval ? "checked" : ""} />
+            <input type="checkbox" data-stack-update-approval ${uiState.stackUpdateRequiresApproval ? "checked" : ""} />
             Require approval before live updates
           </label>
         </div>
@@ -1228,7 +1191,7 @@ function renderStacks() {
             const liveAccess = item.job_access?.docker_update_live || {};
             const checkAccess = item.job_access?.docker_check || {};
             const dryAccess = item.job_access?.docker_update_dry_run || {};
-            const dockerUpdateSettings = state.data?.settings?.docker_updates || {};
+            const dockerUpdateSettings = entitiesState.settings?.docker_updates || {};
             const resolvedHost = item.resolved_host || (item.host === "localhost" && item.guest_host ? item.guest_host : item.host);
             const host = escapeHtml(resolvedHost || "unknown");
             const projectDir = escapeHtml(item.project_dir || item.path || "not set");
@@ -1254,7 +1217,7 @@ function renderStacks() {
               : liveAccess.reason || checkAccess.reason || "Inspection unavailable.";
             const accessSecondary =
               !dryAccess.eligible && dryAccess.reason && dryAccess.reason !== accessPrimary ? dryAccess.reason : "";
-            const detailsExpanded = Boolean(state.expandedStacks[item.name]);
+            const detailsExpanded = Boolean(uiState.expandedStacks[item.name]);
             const detailReport = report && Object.keys(report).length ? renderInspectionServices(report) : emptyState("Run a check to load image-by-image details.");
             const detailSummary = changedServices
               ? `<span class="subline">${pluralize(changedServices, "service")} changed in the latest successful update.</span>`
@@ -1348,7 +1311,7 @@ function renderStacks() {
 }
 
 function renderHosts() {
-  const items = state.data.hosts.items;
+  const items = entitiesState.hosts.items;
   renderTable(
     "hosts-table",
     ["Host", "Group", "Address", "Agent", "Actions"],
@@ -1434,7 +1397,7 @@ function renderHosts() {
 }
 
 function renderAgents() {
-  const items = state.data.agents.items;
+  const items = entitiesState.agents.items;
   renderTable(
     "agents-table",
     ["Agent", "Transport", "Platform", "Version", "Capabilities", "Last Seen"],
@@ -1572,7 +1535,7 @@ function renderJobs() {
 }
 
 function renderApprovals() {
-  const items = state.data.jobs.items.filter((item) => item.approval_status === "pending");
+  const items = entitiesState.jobs.items.filter((item) => item.approval_status === "pending");
   renderTable(
     "approvals-table",
     ["Job", "Target", "Executor", "Requested By", "Action"],
@@ -1601,7 +1564,7 @@ function renderApprovals() {
 }
 
 function renderSchedules() {
-  const items = state.data.schedules.items;
+  const items = entitiesState.schedules.items;
   renderTable(
     "schedules-table",
     ["Schedule", "Kind", "Cron", "Next Run", "State", "Action"],
@@ -1723,8 +1686,8 @@ function renderBackups() {
 }
 
 function renderSettings() {
-  const settings = state.data.settings;
-  const context = state.data.context || {};
+  const settings = entitiesState.settings;
+  const context = entitiesState.context || {};
   const dockerUpdates = settings.docker_updates || {};
   siteChip.textContent = settings.site_name;
   document.title = settings.ui.app_display_name || `${settings.ui.app_name} v${settings.ui.app_version}`;
@@ -1863,7 +1826,7 @@ function renderSettings() {
         [item.name, item.agent_name].map((value) => String(value || "")).filter(Boolean)
       )
     );
-    const queueableAgents = (state.data?.agents?.items || []).filter((item) => {
+    const queueableAgents = (entitiesState.agents?.items || []).filter((item) => {
       const identity = [item.display_name, item.name].map((value) => String(value || "")).filter(Boolean);
       if (identity.some((value) => skippedNames.has(value))) {
         return false;
@@ -1914,8 +1877,8 @@ function renderAll() {
   renderAgents();
   populateJobKindSelect();
   syncJobForm(jobKindSelect.value, {
-    resetOptions: state.jobFormKind !== jobKindSelect.value,
-    preserveSelection: state.jobFormKind === jobKindSelect.value,
+    resetOptions: jobFormState.kind !== jobKindSelect.value,
+    preserveSelection: jobFormState.kind === jobKindSelect.value,
   });
   syncJobLogPanel();
   renderJobs();
@@ -1925,6 +1888,14 @@ function renderAll() {
   renderSettings();
 }
 
+function pruneSelectionState() {
+  setSelectedJobs(selectionState.jobs);
+  setSelectedStacks(selectionState.stacks);
+  setSelectedBackups(selectionState.backups);
+  setSelectedJobStacks(jobFormState.selectedStacks, jobFormState.kind || jobKindSelect.value);
+  setSelectedJobHosts(jobFormState.selectedHosts, jobFormState.kind || jobKindSelect.value);
+}
+
 async function loadDashboard() {
   const [overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context] = await Promise.all([
     api("/api/v1/overview"),
@@ -1932,19 +1903,7 @@ async function loadDashboard() {
     api("/api/v1/hosts"),
     api("/api/v1/stacks"),
     api("/api/v1/docker/updates").catch((error) => ({
-      summary: {
-        total_stacks: 0,
-        checkable_stacks: 0,
-        checked_stacks: 0,
-        outdated_stacks: 0,
-        outdated_images: 0,
-        selectable_stacks: 0,
-        blocked_live_updates: 0,
-        running_checks: 0,
-        failed_checks: 0,
-        running_updates: 0,
-      },
-      items: [],
+      ...EMPTY_DOCKER_UPDATES,
       error: error.message,
     })),
     api("/api/v1/jobs"),
@@ -1954,18 +1913,16 @@ async function loadDashboard() {
     api("/api/v1/job-kinds"),
     api("/api/v1/context"),
   ]);
-  state.data = { overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context };
-  setSelectedJobs(state.jobSelection);
-  setSelectedStacks(state.stackSelection);
-  setSelectedBackups(state.backupSelection);
+  Object.assign(entitiesState, { overview, agents, hosts, stacks, dockerUpdates, jobs, schedules, backups, settings, jobKinds, context });
+  pruneSelectionState();
   renderAll();
 }
 
 async function refreshDashboard() {
   await loadDashboard();
-  if (state.selectedJob) {
+  if (uiState.selectedJob) {
     try {
-      await selectJob(state.selectedJob, true);
+      await selectJob(uiState.selectedJob, true);
     } catch (_) {
       clearSelectedJobDetails("Previously selected job was deleted.");
     }
@@ -1973,12 +1930,12 @@ async function refreshDashboard() {
 }
 
 async function selectJob(jobId, silent = false) {
-  state.selectedJob = jobId;
+  uiState.selectedJob = jobId;
   const [job, events] = await Promise.all([api(`/api/v1/jobs/${jobId}`), api(`/api/v1/jobs/${jobId}/events`)]);
   const resultMarkup = buildJobResultMarkup(job);
   jobResult.innerHTML = resultMarkup;
   jobEvents.textContent = events.items.map((item) => `[${item.ts}] ${item.message}`).join("\n") || "No events yet.";
-  if (!silent && state.currentPage !== "jobs") {
+  if (!silent && uiState.currentPage !== "jobs") {
     setPage("jobs");
   }
 }
@@ -2006,7 +1963,7 @@ async function deleteJob(jobId) {
   }
   const result = await api(`/api/v1/jobs/${jobId}`, { method: "DELETE" });
   setSelectedJobs(selectedJobIds().filter((id) => id !== jobId));
-  if (state.selectedJob === jobId) {
+  if (uiState.selectedJob === jobId) {
     clearSelectedJobDetails("Deleted job log.");
   }
   await refreshDashboard();
@@ -2045,7 +2002,7 @@ async function deleteSelectedJobs() {
   });
 
   setSelectedJobs(selectedJobIds().filter((id) => !deletedIds.includes(id)));
-  if (state.selectedJob && deletedIds.includes(state.selectedJob)) {
+  if (uiState.selectedJob && deletedIds.includes(uiState.selectedJob)) {
     clearSelectedJobDetails("Deleted job log.");
   }
   await refreshDashboard();
@@ -2254,13 +2211,13 @@ async function createAgentToken() {
 
 function logoutUser() {
   localStorage.removeItem("ops_token");
-  state.token = "";
+  const freshState = createState();
+  sessionState.token = "";
+  Object.assign(uiState, freshState.ui);
+  Object.assign(jobFormState, freshState.jobForm);
+  Object.assign(selectionState, freshState.selection);
+  Object.assign(entitiesState, freshState.entities);
   clearSelectedJobDetails();
-  state.jobSelection = [];
-  state.stackSelection = [];
-  state.backupSelection = [];
-  state.expandedStacks = {};
-  state.data = null;
   appScreen.classList.add("hidden");
   loginScreen.classList.remove("hidden");
 }
@@ -2277,8 +2234,8 @@ loginForm.addEventListener("submit", async (event) => {
       }),
       headers: { "Content-Type": "application/json" },
     });
-    state.token = result.token;
-    localStorage.setItem("ops_token", state.token);
+    sessionState.token = result.token;
+    localStorage.setItem("ops_token", sessionState.token);
     loginScreen.classList.add("hidden");
     appScreen.classList.remove("hidden");
     syncPageFromHash();
@@ -2299,7 +2256,7 @@ document.getElementById("logout").addEventListener("click", () => {
 });
 
 jobLogExpandButton.addEventListener("click", () => {
-  state.jobLogExpanded = !state.jobLogExpanded;
+  uiState.jobLogExpanded = !uiState.jobLogExpanded;
   syncJobLogPanel();
 });
 
@@ -2315,20 +2272,29 @@ jobStackMenu.addEventListener("click", (event) => {
   if (!bulkAction) {
     return;
   }
-  const checked = bulkAction.dataset.jobStackBulk === "all";
-  jobStackOptions.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-    input.checked = checked;
-  });
-  updateJobStackSelectionState(jobKindSelect.value);
+  const nextSelection = bulkAction.dataset.jobStackBulk === "all" ? getJobStacksForKind(jobKindSelect.value).map((stack) => stack.name) : [];
+  setSelectedJobStacks(nextSelection, jobKindSelect.value);
+  renderJobStackOptions(jobKindSelect.value, true);
 });
 
-jobStackOptions.addEventListener("change", () => {
+jobStackOptions.addEventListener("change", (event) => {
+  const input = event.target.closest('input[type="checkbox"]');
+  if (!input) {
+    return;
+  }
+  const next = new Set(getSelectedJobStacks(jobKindSelect.value));
+  if (input.checked) {
+    next.add(input.value);
+  } else {
+    next.delete(input.value);
+  }
+  setSelectedJobStacks([...next], jobKindSelect.value);
   updateJobStackSelectionState(jobKindSelect.value);
 });
 
 jobKindSelect.addEventListener("change", () => {
-  if (state.jobFormKind) {
-    storeRenderedJobOptionValues(state.jobFormKind);
+  if (jobFormState.kind) {
+    storeRenderedJobOptionValues(jobFormState.kind);
   }
   syncJobForm(jobKindSelect.value, { preserveSelection: false });
 });
@@ -2345,29 +2311,49 @@ jobHostMenu.addEventListener("click", (event) => {
   if (!bulkAction) {
     return;
   }
-  const checked = bulkAction.dataset.jobHostBulk === "all";
-  jobHostOptions.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach((input) => {
-    input.checked = checked;
-  });
+  const nextSelection =
+    bulkAction.dataset.jobHostBulk === "all"
+      ? getJobHostsForKind(jobKindSelect.value)
+          .filter((host) => getJobHostAccess(host, jobKindSelect.value).eligible)
+          .map((host) => host.name)
+      : [];
+  setSelectedJobHosts(nextSelection, jobKindSelect.value);
+  renderJobHostOptions(jobKindSelect.value, true);
+});
+
+jobHostOptions.addEventListener("change", (event) => {
+  const input = event.target.closest('input[type="checkbox"]');
+  if (!input) {
+    return;
+  }
+  const next = new Set(getSelectedJobHosts(jobKindSelect.value));
+  if (input.checked) {
+    next.add(input.value);
+  } else {
+    next.delete(input.value);
+  }
+  setSelectedJobHosts([...next], jobKindSelect.value);
   updateJobHostSelectionState(jobKindSelect.value);
 });
 
-jobHostOptions.addEventListener("change", () => {
-  updateJobHostSelectionState(jobKindSelect.value);
-});
-
-jobOptions.addEventListener("change", () => {
-  storeRenderedJobOptionValues(jobKindSelect.value);
+const rerenderJobHostOptions = debounce(() => {
   if (getJobKindConfig(jobKindSelect.value).mode === "host_multi") {
     renderJobHostOptions(jobKindSelect.value, true);
   }
+}, 120);
+
+jobOptions.addEventListener("change", () => {
+  storeRenderedJobOptionValues(jobKindSelect.value);
+  rerenderJobHostOptions();
 });
 
 jobOptions.addEventListener("input", () => {
   storeRenderedJobOptionValues(jobKindSelect.value);
-  if (getJobKindConfig(jobKindSelect.value).mode === "host_multi") {
-    renderJobHostOptions(jobKindSelect.value, true);
-  }
+  rerenderJobHostOptions();
+});
+
+jobManualTargetInput.addEventListener("input", () => {
+  jobFormState.manualTarget = jobManualTargetInput.value;
 });
 
 document.addEventListener("click", (event) => {
@@ -2380,8 +2366,8 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.jobLogExpanded) {
-    state.jobLogExpanded = false;
+  if (event.key === "Escape" && uiState.jobLogExpanded) {
+    uiState.jobLogExpanded = false;
     syncJobLogPanel();
   }
 });
@@ -2389,7 +2375,7 @@ document.addEventListener("keydown", (event) => {
 document.getElementById("job-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   jobResult.textContent = "";
-  try {
+  await withAsyncAction(async () => {
     const request = buildJobRequest();
     const result = await api("/api/v1/jobs", {
       method: "POST",
@@ -2404,14 +2390,14 @@ document.getElementById("job-form").addEventListener("submit", async (event) => 
     jobResult.textContent = queueSummary.detail;
     showFlash(queueSummary.flash);
     await refreshDashboard();
-  } catch (error) {
+  }, (error) => {
     jobResult.textContent = error.message;
-  }
+  });
 });
 
 if (fleetUpdateQueueButton) {
   fleetUpdateQueueButton.addEventListener("click", async () => {
-    try {
+    await withAsyncAction(async () => {
       const result = await queuePreset("agent_update", "agent", "all", {
         executor: "agent",
         requires_approval: false,
@@ -2427,11 +2413,11 @@ if (fleetUpdateQueueButton) {
                 ...skipped.map((item) => `- ${item.target_ref || "unknown"}: ${item.reason || "not eligible"}`),
               ]
             : []),
-        ].join("\n");
+          ].join("\n");
       }
-    } catch (error) {
+    }, (error) => {
       showFlash(error.message, "error");
-    }
+    });
   });
 }
 
@@ -2442,12 +2428,12 @@ if (fleetUpdateCopyButton) {
       showFlash("No fleet update bundle is available yet.");
       return;
     }
-    try {
+    await withAsyncAction(async () => {
       await navigator.clipboard.writeText(command);
       showFlash("Copied the fleet update bundle.");
-    } catch (error) {
+    }, (error) => {
       showFlash(`Copy failed: ${error.message}`);
-    }
+    });
   });
 }
 
@@ -2491,231 +2477,234 @@ appScreen.addEventListener("change", (event) => {
   }
 
   if (event.target.matches("[data-stack-update-approval]")) {
-    state.stackUpdateRequiresApproval = Boolean(event.target.checked);
+    uiState.stackUpdateRequiresApproval = Boolean(event.target.checked);
   }
 });
 
-appScreen.addEventListener("click", async (event) => {
-  const pageLink = event.target.closest("[data-page-link]");
-  if (pageLink) {
-    setPage(pageLink.dataset.pageLink);
-    return;
-  }
-
-  const installModeButton = event.target.closest("[data-install-mode]");
-  if (installModeButton) {
-    state.installPreviewMode = installModeButton.dataset.installMode || "compose";
-    renderInstallPreviews();
-    return;
-  }
-
-  const stackButton = event.target.closest("[data-stack-action]");
-  if (stackButton) {
-    const stackName = stackButton.dataset.stackName;
-    const action = stackButton.dataset.stackAction;
-    if (!stackName || !action) {
-      return;
-    }
-    if (action === "check") {
-      await queuePreset("docker_check", "stack", stackName, {
-        executor: "agent",
-        selected_stacks: [stackName],
-        requires_approval: false,
-      });
-      return;
-    }
-    if (action === "dry-run") {
-      await queuePreset("docker_update", "stack", stackName, {
-        executor: "agent",
-        selected_stacks: [stackName],
-        dry_run: true,
-        requires_approval: false,
-      });
-      return;
-    }
-    if (action === "update") {
-      await queuePreset("docker_update", "stack", stackName, {
-        executor: "agent",
-        selected_stacks: [stackName],
-        dry_run: false,
-        requires_approval: state.stackUpdateRequiresApproval,
-      });
-      return;
-    }
-    if (action === "rollback") {
-      await queuePreset("rollback", "stack", stackName, { executor: "worker" });
-      return;
-    }
-    if (action === "details") {
-      toggleStackDetails(stackName);
-      return;
-    }
-  }
-
-  const stackCheckAll = event.target.closest("[data-stack-bulk-check]");
-  if (stackCheckAll) {
-    await queuePreset("docker_check", "stack", "all", {
+const stackActionHandlers = {
+  async check(stackName) {
+    await queuePreset("docker_check", "stack", stackName, {
       executor: "agent",
-      selected_stacks: getDockerUpdateItems().map((item) => item.name),
+      selected_stacks: [stackName],
       requires_approval: false,
     });
-    return;
-  }
-
-  const stackSelectMode = event.target.closest("[data-stack-select-mode]");
-  if (stackSelectMode) {
-    if (stackSelectMode.dataset.stackSelectMode === "outdated") {
-      setSelectedStacks(
-        getDockerUpdateItems()
-          .filter((item) => item.selection_eligible)
-          .map((item) => item.name)
-      );
-    } else {
-      setSelectedStacks([]);
-    }
-    renderStacks();
-    return;
-  }
-
-  const stackUpdateSelected = event.target.closest("[data-stack-update-selected]");
-  if (stackUpdateSelected) {
-    const selectedStacks = selectedStackNames();
-    if (!selectedStacks.length) {
-      showFlash("Select at least one eligible outdated stack first.", "error");
-      return;
-    }
-    const confirmMessage = state.stackUpdateRequiresApproval
-      ? `Queue ${selectedStacks.length} live stack update job(s) for approval?`
-      : `Queue ${selectedStacks.length} live stack update job(s) now?`;
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
-    await queuePreset("docker_update", "stack", "all", {
+  },
+  async "dry-run"(stackName) {
+    await queuePreset("docker_update", "stack", stackName, {
       executor: "agent",
-      selected_stacks: selectedStacks,
-      dry_run: false,
-      requires_approval: state.stackUpdateRequiresApproval,
+      selected_stacks: [stackName],
+      dry_run: true,
+      requires_approval: false,
     });
-    setSelectedStacks([]);
-    renderStacks();
-    return;
-  }
+  },
+  async update(stackName) {
+    await queuePreset("docker_update", "stack", stackName, {
+      executor: "agent",
+      selected_stacks: [stackName],
+      dry_run: false,
+      requires_approval: uiState.stackUpdateRequiresApproval,
+    });
+  },
+  async rollback(stackName) {
+    await queuePreset("rollback", "stack", stackName, { executor: "worker" });
+  },
+  details(stackName) {
+    toggleStackDetails(stackName);
+  },
+};
 
-  const hostButton = event.target.closest("[data-host-kind]");
-  if (hostButton) {
-    const hostName = hostButton.dataset.hostName;
-    const kind = hostButton.dataset.hostKind;
-    const dryRun = hostButton.dataset.dryRun === "true";
-    if (!hostName || !kind) {
-      return;
-    }
-    const payload = { executor: "agent" };
-    if (kind !== "package_check") {
-      payload.dry_run = dryRun;
-    }
-    if (dryRun || kind === "package_check") {
-      payload.requires_approval = false;
-    }
-    if (kind === "package_check") {
-      payload.hosts = [hostName];
-    }
-    if (kind.startsWith("proxmox")) {
-      payload.limit = hostName;
-    }
-    if (kind === "proxmox_reboot") {
-      payload.reboot_mode = hostButton.dataset.rebootMode || "soft";
-    }
-    await queuePreset(kind, "host", hostName, payload);
-    return;
-  }
-
-  const jobLogButton = event.target.closest("[data-job-log]");
-  if (jobLogButton) {
-    await selectJob(jobLogButton.dataset.jobLog);
-    return;
-  }
-
-  const approveButton = event.target.closest("[data-job-approve]");
-  if (approveButton) {
-    await approveJob(approveButton.dataset.jobApprove);
-    return;
-  }
-
-  const cancelButton = event.target.closest("[data-job-cancel]");
-  if (cancelButton) {
-    await cancelJob(cancelButton.dataset.jobCancel);
-    return;
-  }
-
-  const jobDeleteButton = event.target.closest("[data-job-delete]");
-  if (jobDeleteButton) {
-    await deleteJob(jobDeleteButton.dataset.jobDelete);
-    return;
-  }
-
-  const jobSelectMode = event.target.closest("[data-job-select-mode]");
-  if (jobSelectMode) {
-    const now = Date.now();
-    const matchingIds = getJobItems()
-      .filter((item) => canDeleteJob(item))
-      .filter((item) => {
-        if (jobSelectMode.dataset.jobSelectMode === "deletable") {
-          return true;
-        }
-        const createdAt = new Date(item.created_at).getTime();
-        if (!Number.isFinite(createdAt)) {
+const appClickHandler = createDelegatedHandler([
+  {
+    selector: "[data-page-link]",
+    handler: (node) => setPage(node.dataset.pageLink),
+  },
+  {
+    selector: "[data-install-mode]",
+    handler: (node) => {
+      uiState.installPreviewMode = node.dataset.installMode || "compose";
+      renderInstallPreviews();
+    },
+  },
+  {
+    selector: "[data-stack-action]",
+    handler: async (node) => {
+      const stackName = node.dataset.stackName;
+      const action = node.dataset.stackAction;
+      if (!stackName || !action || !stackActionHandlers[action]) {
+        return;
+      }
+      await stackActionHandlers[action](stackName, node);
+    },
+  },
+  {
+    selector: "[data-stack-bulk-check]",
+    handler: async () => {
+      await queuePreset("docker_check", "stack", "all", {
+        executor: "agent",
+        selected_stacks: getDockerUpdateItems().map((item) => item.name),
+        requires_approval: false,
+      });
+    },
+  },
+  {
+    selector: "[data-stack-select-mode]",
+    handler: (node) => {
+      if (node.dataset.stackSelectMode === "outdated") {
+        setSelectedStacks(
+          getDockerUpdateItems()
+            .filter((item) => item.selection_eligible)
+            .map((item) => item.name)
+        );
+      } else {
+        setSelectedStacks([]);
+      }
+      renderStacks();
+    },
+  },
+  {
+    selector: "[data-stack-update-selected]",
+    handler: async () => {
+      const selectedStacks = selectedStackNames();
+      if (!selectedStacks.length) {
+        showFlash("Select at least one eligible outdated stack first.", "error");
+        return;
+      }
+      const confirmMessage = uiState.stackUpdateRequiresApproval
+        ? `Queue ${selectedStacks.length} live stack update job(s) for approval?`
+        : `Queue ${selectedStacks.length} live stack update job(s) now?`;
+      if (!window.confirm(confirmMessage)) {
+        return;
+      }
+      await queuePreset("docker_update", "stack", "all", {
+        executor: "agent",
+        selected_stacks: selectedStacks,
+        dry_run: false,
+        requires_approval: uiState.stackUpdateRequiresApproval,
+      });
+      setSelectedStacks([]);
+      renderStacks();
+    },
+  },
+  {
+    selector: "[data-host-kind]",
+    handler: async (node) => {
+      const hostName = node.dataset.hostName;
+      const kind = node.dataset.hostKind;
+      const dryRun = node.dataset.dryRun === "true";
+      if (!hostName || !kind) {
+        return;
+      }
+      const payload = { executor: "agent" };
+      if (kind !== "package_check") {
+        payload.dry_run = dryRun;
+      }
+      if (dryRun || kind === "package_check") {
+        payload.requires_approval = false;
+      }
+      if (kind === "package_check") {
+        payload.hosts = [hostName];
+      }
+      if (kind.startsWith("proxmox")) {
+        payload.limit = hostName;
+      }
+      if (kind === "proxmox_reboot") {
+        payload.reboot_mode = node.dataset.rebootMode || "soft";
+      }
+      await queuePreset(kind, "host", hostName, payload);
+    },
+  },
+  {
+    selector: "[data-job-log]",
+    handler: async (node) => {
+      await selectJob(node.dataset.jobLog);
+    },
+  },
+  {
+    selector: "[data-job-approve]",
+    handler: async (node) => {
+      await approveJob(node.dataset.jobApprove);
+    },
+  },
+  {
+    selector: "[data-job-cancel]",
+    handler: async (node) => {
+      await cancelJob(node.dataset.jobCancel);
+    },
+  },
+  {
+    selector: "[data-job-delete]",
+    handler: async (node) => {
+      await deleteJob(node.dataset.jobDelete);
+    },
+  },
+  {
+    selector: "[data-job-select-mode]",
+    handler: (node) => {
+      const now = Date.now();
+      const matchingIds = getJobItems()
+        .filter((item) => canDeleteJob(item))
+        .filter((item) => {
+          if (node.dataset.jobSelectMode === "deletable") {
+            return true;
+          }
+          const createdAt = new Date(item.created_at).getTime();
+          if (!Number.isFinite(createdAt)) {
+            return false;
+          }
+          if (node.dataset.jobSelectMode === "older-1d") {
+            return now - createdAt >= 24 * 60 * 60 * 1000;
+          }
+          if (node.dataset.jobSelectMode === "older-7d") {
+            return now - createdAt >= 7 * 24 * 60 * 60 * 1000;
+          }
           return false;
-        }
-        if (jobSelectMode.dataset.jobSelectMode === "older-1d") {
-          return now - createdAt >= 24 * 60 * 60 * 1000;
-        }
-        if (jobSelectMode.dataset.jobSelectMode === "older-7d") {
-          return now - createdAt >= 7 * 24 * 60 * 60 * 1000;
-        }
-        return false;
-      })
-      .map((item) => item.id);
-    setSelectedJobs(jobSelectMode.dataset.jobSelectMode === "none" ? [] : matchingIds);
-    renderJobs();
-    return;
-  }
+        })
+        .map((item) => item.id);
+      setSelectedJobs(node.dataset.jobSelectMode === "none" ? [] : matchingIds);
+      renderJobs();
+    },
+  },
+  {
+    selector: "[data-job-delete-selected]",
+    handler: async () => {
+      await deleteSelectedJobs();
+    },
+  },
+  {
+    selector: "[data-schedule-id]",
+    handler: async (node) => {
+      await toggleSchedule(node.dataset.scheduleId, node.dataset.scheduleEnabled === "true");
+    },
+  },
+  {
+    selector: "[data-backup-delete]",
+    handler: async (node) => {
+      await deleteBackup(node.dataset.backupDelete, node.dataset.backupDeleteSupported === "true");
+    },
+  },
+  {
+    selector: "[data-backup-select-mode]",
+    handler: (node) => {
+      if (node.dataset.backupSelectMode === "all") {
+        setSelectedBackups(getBackupItems().map((item) => item.id));
+      } else {
+        setSelectedBackups([]);
+      }
+      renderBackups();
+    },
+  },
+  {
+    selector: "[data-backup-delete-selected]",
+    handler: async () => {
+      await deleteSelectedBackups();
+    },
+  },
+]);
 
-  const jobDeleteSelected = event.target.closest("[data-job-delete-selected]");
-  if (jobDeleteSelected) {
-    await deleteSelectedJobs();
-    return;
-  }
-
-  const scheduleButton = event.target.closest("[data-schedule-id]");
-  if (scheduleButton) {
-    await toggleSchedule(scheduleButton.dataset.scheduleId, scheduleButton.dataset.scheduleEnabled === "true");
-    return;
-  }
-
-  const backupDeleteButton = event.target.closest("[data-backup-delete]");
-  if (backupDeleteButton) {
-    await deleteBackup(
-      backupDeleteButton.dataset.backupDelete,
-      backupDeleteButton.dataset.backupDeleteSupported === "true"
-    );
-    return;
-  }
-
-  const backupSelectMode = event.target.closest("[data-backup-select-mode]");
-  if (backupSelectMode) {
-    if (backupSelectMode.dataset.backupSelectMode === "all") {
-      setSelectedBackups(getBackupItems().map((item) => item.id));
-    } else {
-      setSelectedBackups([]);
-    }
-    renderBackups();
-    return;
-  }
-
-  const backupDeleteSelected = event.target.closest("[data-backup-delete-selected]");
-  if (backupDeleteSelected) {
-    await deleteSelectedBackups();
-  }
+appScreen.addEventListener("click", async (event) => {
+  await withAsyncAction(() => appClickHandler(event), (error) => {
+    showFlash(error.message, "error");
+  });
 });
 
 window.addEventListener("hashchange", syncPageFromHash);
@@ -2724,7 +2713,7 @@ async function bootstrap() {
   await loadAppVersion();
   syncPageFromHash();
 
-  if (state.token) {
+  if (sessionState.token) {
     loginScreen.classList.add("hidden");
     appScreen.classList.remove("hidden");
     refreshDashboard().catch((error) => {
@@ -2734,7 +2723,7 @@ async function bootstrap() {
   }
 
   setInterval(async () => {
-    if (!state.token) {
+    if (!sessionState.token) {
       return;
     }
     if (

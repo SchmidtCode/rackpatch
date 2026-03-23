@@ -62,6 +62,10 @@ Configure the bot token and allowed chat IDs in `Settings`, then use commands su
 ## Operating notes
 
 - Schedules are seeded from the site overlay and remain disabled by default until explicitly enabled in the UI or Telegram.
+- Schedule cron expressions are evaluated in each schedule's stored `timezone`. Seeded schedules default to `maintenance_timezone`, and API-created schedules also fall back to that value when `timezone` is omitted.
 - Job backups and rollback artifacts are written under `data/backups`.
+- Telegram chat IDs remain the primary gate. Optional sender allowlists can further restrict access by Telegram user ID and/or username; when no sender allowlist is configured, the existing chat-ID-based flow continues to work.
 - `telegram` idles until a bot token is configured.
-- `notify` is optional and only sends Telegram messages when a bot token and chat IDs are configured.
+- `telegram` also stays idle when `RACKPATCH_ADMIN_PASSWORD` or `RACKPATCH_AUTH_SECRET` still use the shipped default insecure values, because the bot authenticates into the control plane with administrator privileges.
+- `notify` is optional and sends Telegram messages when both a bot token and chat IDs are configured.
+- When Telegram is not fully configured, `notify` falls back to log-only delivery and reports that state via `/health` and `/ready`.

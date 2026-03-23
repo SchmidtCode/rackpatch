@@ -72,6 +72,26 @@ def _parse_chat_ids(value: Any) -> list[str]:
     return [str(item).strip() for item in raw_items if str(item).strip()]
 
 
+def _parse_allowed_user_ids(value: Any) -> list[str]:
+    return _parse_chat_ids(value)
+
+
+def _parse_allowed_usernames(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[\s,]+", str(value or ""))
+    usernames: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        username = str(item).strip().lstrip("@").lower()
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        usernames.append(username)
+    return usernames
+
+
 def _mask_secret(secret: str) -> str:
     if not secret:
         return ""
@@ -155,12 +175,30 @@ def get_telegram_settings(*, include_secret: bool = False) -> dict[str, Any]:
     stored = _load_json_setting(TELEGRAM_SETTINGS_KEY)
     bot_token = _normalize_text(stored["bot_token"]) if "bot_token" in stored else config.TELEGRAM_BOT_TOKEN
     chat_ids = _parse_chat_ids(stored["chat_ids"]) if "chat_ids" in stored else list(config.TELEGRAM_CHAT_IDS)
+    allowed_user_ids = (
+        _parse_allowed_user_ids(stored["allowed_user_ids"])
+        if "allowed_user_ids" in stored
+        else list(config.TELEGRAM_ALLOWED_USER_IDS)
+    )
+    allowed_usernames = (
+        _parse_allowed_usernames(stored["allowed_usernames"])
+        if "allowed_usernames" in stored
+        else list(config.TELEGRAM_ALLOWED_USERNAMES)
+    )
+    security_blockers = config.insecure_secret_warnings_for_telegram_bot()
     result: dict[str, Any] = {
         "enabled": bool(bot_token),
         "chat_ids": chat_ids,
         "chat_ids_csv": ", ".join(chat_ids),
+        "allowed_user_ids": allowed_user_ids,
+        "allowed_user_ids_csv": ", ".join(allowed_user_ids),
+        "allowed_usernames": allowed_usernames,
+        "allowed_usernames_csv": ", ".join(f"@{item}" for item in allowed_usernames),
+        "sender_allowlist_configured": bool(allowed_user_ids or allowed_usernames),
         "masked_bot_token": _mask_secret(bot_token),
         "bot_token_configured": bool(bot_token),
+        "security_blockers": security_blockers,
+        "bot_runtime_ready": bool(bot_token) and not security_blockers,
     }
     if include_secret:
         result["bot_token"] = bot_token
@@ -173,5 +211,9 @@ def set_telegram_settings(payload: dict[str, Any]) -> dict[str, Any]:
         stored["bot_token"] = _normalize_text(payload.get("bot_token", ""))
     if "chat_ids" in payload:
         stored["chat_ids"] = _parse_chat_ids(payload.get("chat_ids", ""))
+    if "allowed_user_ids" in payload:
+        stored["allowed_user_ids"] = _parse_allowed_user_ids(payload.get("allowed_user_ids", ""))
+    if "allowed_usernames" in payload:
+        stored["allowed_usernames"] = _parse_allowed_usernames(payload.get("allowed_usernames", ""))
     _save_json_setting(TELEGRAM_SETTINGS_KEY, stored)
     return get_telegram_settings()

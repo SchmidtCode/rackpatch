@@ -12,7 +12,7 @@ def env(name: str, default: str) -> str:
 
 
 APP_NAME = "rackpatch"
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.4.0"
 APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION}"
 GITHUB_REPO_PREFIXES = (
     "https://github.com/",
@@ -38,8 +38,10 @@ SITE_ROOT = Path(env("RACKPATCH_SITE_ROOT", str(RUNTIME_ROOT / "sites" / "exampl
 SITE_NAME = env("RACKPATCH_SITE_NAME", SITE_ROOT.name)
 
 ADMIN_USERNAME = env("RACKPATCH_ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = env("RACKPATCH_ADMIN_PASSWORD", "change-me")
-AUTH_SECRET = env("RACKPATCH_AUTH_SECRET", "change-me-in-production")
+DEFAULT_ADMIN_PASSWORD = "change-me"
+DEFAULT_AUTH_SECRET = "change-me-in-production"
+ADMIN_PASSWORD = env("RACKPATCH_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
+AUTH_SECRET = env("RACKPATCH_AUTH_SECRET", DEFAULT_AUTH_SECRET)
 DEFAULT_AGENT_BOOTSTRAP_TOKEN = env("RACKPATCH_AGENT_BOOTSTRAP_TOKEN", "bootstrap-me")
 PUBLIC_BASE_URL = env("RACKPATCH_PUBLIC_BASE_URL", "http://YOUR-RACKPATCH-HOST:3011").rstrip("/")
 PUBLIC_REPO_URL = env("RACKPATCH_PUBLIC_REPO_URL", "https://github.com/SchmidtCode/rackpatch.git").rstrip("/")
@@ -63,6 +65,25 @@ TELEGRAM_CHAT_IDS = [
     for item in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",")
     if item.strip()
 ]
+TELEGRAM_ALLOWED_USER_IDS = [
+    item.strip()
+    for item in os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").replace(",", " ").split()
+    if item.strip()
+]
+TELEGRAM_ALLOWED_USERNAMES = [
+    item.strip().lstrip("@").lower()
+    for item in os.environ.get("TELEGRAM_ALLOWED_USERNAMES", "").replace(",", " ").split()
+    if item.strip()
+]
+
+
+def insecure_secret_warnings_for_telegram_bot() -> list[str]:
+    warnings: list[str] = []
+    if ADMIN_PASSWORD == DEFAULT_ADMIN_PASSWORD:
+        warnings.append("RACKPATCH_ADMIN_PASSWORD is still set to the default insecure value")
+    if AUTH_SECRET == DEFAULT_AUTH_SECRET:
+        warnings.append("RACKPATCH_AUTH_SECRET is still set to the default insecure value")
+    return warnings
 
 
 def derive_public_install_script_url(repo_url: str, repo_ref: str, explicit_url: str = "") -> str:

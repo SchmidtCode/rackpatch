@@ -12,6 +12,31 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "rackpatch-notify/1.0"})
 
 
+def delivery_state() -> dict[str, Any]:
+    telegram = runtime_settings.get_telegram_settings(include_secret=True)
+    bot_token_configured = bool(telegram.get("bot_token"))
+    chat_ids = [str(chat_id).strip() for chat_id in telegram.get("chat_ids", []) if str(chat_id).strip()]
+    configured = bot_token_configured and bool(chat_ids)
+    reason = ""
+    if not configured:
+        missing: list[str] = []
+        if not bot_token_configured:
+            missing.append("bot_token")
+        if not chat_ids:
+            missing.append("chat_ids")
+        reason = f"telegram_not_configured:{','.join(missing)}"
+    return {
+        "configured": configured,
+        "mode": "telegram" if configured else "log",
+        "reason": reason,
+        "bot_token_configured": bot_token_configured,
+        "chat_ids_configured": bool(chat_ids),
+        "chat_count": len(chat_ids),
+        "chat_ids": chat_ids,
+        "bot_token": telegram.get("bot_token", ""),
+    }
+
+
 def _event_set(payload: dict[str, Any]) -> set[str]:
     raw = payload.get("notify_on")
     if raw is None:
@@ -29,21 +54,22 @@ def should_notify(payload: dict[str, Any], event: str) -> bool:
     return event.lower() in _event_set(payload)
 
 
-def send_message(message: str) -> None:
+def send_message(message: str) -> dict[str, Any]:
     text = str(message or "").strip()
     if not text:
-        return
-    telegram = runtime_settings.get_telegram_settings(include_secret=True)
-    if not telegram.get("bot_token") or not telegram.get("chat_ids"):
+        return {"status": "ignored", **delivery_state()}
+    state = delivery_state()
+    if state["mode"] != "telegram":
         print(text, flush=True)
-        return
-    for chat_id in telegram["chat_ids"]:
+        return {"status": "ok", **state}
+    for chat_id in state["chat_ids"]:
         response = SESSION.post(
-            f"https://api.telegram.org/bot{telegram['bot_token']}/sendMessage",
+            f"https://api.telegram.org/bot{state['bot_token']}/sendMessage",
             json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
             timeout=30,
         )
         response.raise_for_status()
+    return {"status": "ok", **state}
 
 
 def _short_job_id(job: dict[str, Any]) -> str:
