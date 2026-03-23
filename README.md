@@ -2,7 +2,7 @@
 
 rackpatch is a compose-first homelab maintenance appliance for Docker stacks, helper-gated Debian or Ubuntu package maintenance, and opt-in Proxmox node actions.
 
-Version in this repo: `v0.3.9`
+Version in this repo: `v0.4.0`
 
 ## What rackpatch does
 
@@ -28,7 +28,7 @@ Version in this repo: `v0.3.9`
 - `worker`: database-backed job runner
 - `db`: Postgres
 - `telegram`: Telegram bot for remote job control
-- `notify`: optional send-only Telegram or webhook notifier
+- `notify`: optional send-only Telegram notifier with log-only fallback when Telegram is not configured
 - `rackpatch-agent`: remote polling agent for Debian, Ubuntu, and Docker hosts
 
 ## Quick start

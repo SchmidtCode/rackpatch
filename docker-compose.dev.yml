@@ -1,31 +1,34 @@
+x-rackpatch-build: &rackpatch-build
+  context: .
+  dockerfile: Dockerfile
+
+x-rackpatch-source-mount: &rackpatch-source-mount
+  volumes:
+    - .:/workspace
+
+x-rackpatch-dev-app: &rackpatch-dev-app
+  <<: *rackpatch-source-mount
+  working_dir: /workspace
+  environment:
+    RACKPATCH_RUNTIME_ROOT: /workspace
+    RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+    ANSIBLE_CONFIG: /workspace/ansible.cfg
+    ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}/inventory/hosts.yml
+    PYTHONPATH: /workspace/app:/opt/rackpatch/app
+
+x-rackpatch-runtime-env: &rackpatch-runtime-env
+  RACKPATCH_RUNTIME_ROOT: /workspace
+  RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
+  PYTHONPATH: /workspace/app:/opt/rackpatch/app
+
 services:
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
-    working_dir: /workspace
-    environment:
-      RACKPATCH_RUNTIME_ROOT: /workspace
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
-      ANSIBLE_CONFIG: /workspace/ansible.cfg
-      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}/inventory/hosts.yml
-      PYTHONPATH: /workspace/app:/opt/rackpatch/app
-    volumes:
-      - .:/workspace
+    build: *rackpatch-build
+    <<: *rackpatch-dev-app
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
-    working_dir: /workspace
-    environment:
-      RACKPATCH_RUNTIME_ROOT: /workspace
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
-      ANSIBLE_CONFIG: /workspace/ansible.cfg
-      ANSIBLE_INVENTORY: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}/inventory/hosts.yml
-      PYTHONPATH: /workspace/app:/opt/rackpatch/app
-    volumes:
-      - .:/workspace
+    build: *rackpatch-build
+    <<: *rackpatch-dev-app
 
   agent:
     build:
@@ -42,21 +45,13 @@ services:
       dockerfile: Dockerfile.web
 
   telegram:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    build: *rackpatch-build
+    <<: *rackpatch-source-mount
     environment:
-      RACKPATCH_RUNTIME_ROOT: /workspace
-      RACKPATCH_SITE_ROOT: ${RACKPATCH_SITE_ROOT:-/workspace/sites/example}
-      PYTHONPATH: /workspace/app:/opt/rackpatch/app
-    volumes:
-      - .:/workspace
+      <<: *rackpatch-runtime-env
 
   notify:
-    build:
-      context: .
-      dockerfile: Dockerfile.rackpatch
+    build: *rackpatch-build
+    <<: *rackpatch-source-mount
     environment:
       PYTHONPATH: /workspace/app:/opt/rackpatch/app
-    volumes:
-      - .:/workspace

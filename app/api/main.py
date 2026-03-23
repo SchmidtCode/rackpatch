@@ -35,6 +35,12 @@ def _json_body(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _schedule_payload_fields(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    schedule_payload = _json_body(payload.get("payload"))
+    timezone_name = site.schedule_timezone_name(payload.get("timezone"))
+    return schedule_payload, timezone_name
+
+
 def _matching_agent_rows(
     cur: Any,
     *,
@@ -786,7 +792,7 @@ def list_schedules(username: str = Depends(auth.require_user)) -> dict[str, Any]
     return {
         "items": db.fetch_all(
             """
-            SELECT id, name, kind, cron_expr, payload, enabled, next_run_at, last_run_at, created_at, updated_at
+            SELECT id, name, kind, cron_expr, timezone, payload, enabled, next_run_at, last_run_at, created_at, updated_at
             FROM schedules
             ORDER BY name
             """
@@ -803,20 +809,44 @@ def upsert_schedule(payload: dict[str, Any], username: str = Depends(auth.requir
     if not all([name, kind, cron_expr]):
         raise HTTPException(status_code=400, detail="name, kind, and cron_expr are required")
     enabled = bool(payload.get("enabled", False))
+    schedule_payload, timezone_name = _schedule_payload_fields(payload)
     with db.db_cursor() as cur:
         cur.execute(
             """
-            INSERT INTO schedules (name, kind, cron_expr, payload, enabled, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            SELECT id, kind, cron_expr, timezone, payload, next_run_at
+            FROM schedules
+            WHERE name = %s
+            """,
+            (name,),
+        )
+        existing = cur.fetchone()
+        definition_changed = (
+            existing is None
+            or existing["kind"] != kind
+            or existing["cron_expr"] != cron_expr
+            or site.schedule_timezone_name(existing.get("timezone")) != timezone_name
+            or (existing["payload"] or {}) != schedule_payload
+        )
+        next_run_at = (
+            site.schedule_next_run(cron_expr, timezone_name=timezone_name)
+            if definition_changed or existing is None or existing.get("next_run_at") is None
+            else existing["next_run_at"]
+        )
+        cur.execute(
+            """
+            INSERT INTO schedules (name, kind, cron_expr, timezone, payload, enabled, next_run_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (name) DO UPDATE SET
               kind = EXCLUDED.kind,
               cron_expr = EXCLUDED.cron_expr,
+              timezone = EXCLUDED.timezone,
               payload = EXCLUDED.payload,
               enabled = EXCLUDED.enabled,
+              next_run_at = EXCLUDED.next_run_at,
               updated_at = NOW()
             RETURNING *
             """,
-            (name, kind, cron_expr, json.dumps(_json_body(payload.get("payload"))), enabled),
+            (name, kind, cron_expr, timezone_name, json.dumps(schedule_payload), enabled, next_run_at),
         )
         row = cur.fetchone()
     return row
@@ -827,11 +857,36 @@ def toggle_schedule(schedule_id: str, payload: dict[str, Any], username: str = D
     del username
     enabled = bool(payload.get("enabled", False))
     with db.db_cursor() as cur:
-        cur.execute(
-            "UPDATE schedules SET enabled = %s, updated_at = NOW() WHERE id = %s RETURNING *",
-            (enabled, schedule_id),
-        )
-        row = cur.fetchone()
+        if enabled:
+            cur.execute("SELECT cron_expr, timezone, next_run_at FROM schedules WHERE id = %s", (schedule_id,))
+            current = cur.fetchone()
+            if current is None:
+                row = None
+            else:
+                next_run_at = current["next_run_at"]
+                if next_run_at is None or next_run_at <= datetime.now(timezone.utc):
+                    next_run_at = site.schedule_next_run(
+                        current["cron_expr"],
+                        timezone_name=current.get("timezone"),
+                    )
+                cur.execute(
+                    """
+                    UPDATE schedules
+                    SET enabled = %s,
+                        next_run_at = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (enabled, next_run_at, schedule_id),
+                )
+                row = cur.fetchone()
+        else:
+            cur.execute(
+                "UPDATE schedules SET enabled = %s, updated_at = NOW() WHERE id = %s RETURNING *",
+                (enabled, schedule_id),
+            )
+            row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="schedule not found")
     return row

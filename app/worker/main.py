@@ -4,28 +4,25 @@ import json
 import time
 from datetime import datetime, timezone
 
-from croniter import croniter
-
-from common import config, db, jobs, legacy, notify
+from common import config, db, jobs, legacy, notify, site
 
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def next_cron(expr: str, base: datetime | None = None) -> datetime:
-    base = base or now()
-    return croniter(expr, base).get_next(datetime)
+def next_cron(expr: str, *, timezone_name: str | None = None, base: datetime | None = None) -> datetime:
+    return site.schedule_next_run(expr, timezone_name=timezone_name, base=base or now())
 
 
 def seed_schedule_next_run() -> None:
     with db.db_cursor() as cur:
-        cur.execute("SELECT id, cron_expr, next_run_at FROM schedules")
+        cur.execute("SELECT id, cron_expr, timezone, next_run_at FROM schedules")
         for row in cur.fetchall():
             if row["next_run_at"] is None:
                 cur.execute(
                     "UPDATE schedules SET next_run_at = %s, updated_at = NOW() WHERE id = %s",
-                    (next_cron(row["cron_expr"]), row["id"]),
+                    (next_cron(row["cron_expr"], timezone_name=row.get("timezone")), row["id"]),
                 )
 
 
@@ -34,7 +31,7 @@ def enqueue_schedules() -> None:
     with db.db_cursor() as cur:
         cur.execute(
             """
-            SELECT id, name, kind, cron_expr, payload, next_run_at
+            SELECT id, name, kind, cron_expr, timezone, payload, next_run_at
             FROM schedules
             WHERE enabled = TRUE AND next_run_at <= NOW()
             ORDER BY next_run_at ASC
@@ -75,7 +72,7 @@ def enqueue_schedules() -> None:
                 SET last_run_at = NOW(), next_run_at = %s, updated_at = NOW()
                 WHERE id = %s
                 """,
-                (next_cron(row["cron_expr"]), row["id"]),
+                (next_cron(row["cron_expr"], timezone_name=row.get("timezone")), row["id"]),
             )
 
 

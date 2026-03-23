@@ -10,7 +10,7 @@
 
 ## GitHub Actions and GHCR
 
-GitHub automation builds and publishes the three custom images, and the tracked `docker-compose.yml` uses those published images by default. The tracked `docker-compose.dev.yml` is the source-build override for local development.
+GitHub automation builds and publishes the three custom images, and the tracked `docker-compose.yml` uses those published images by default. The tracked `docker-compose.dev.yml` is the source-build override for local development, using the canonical `Dockerfile` for the main Rackpatch image.
 
 GitHub automation has two jobs under `.github/workflows/`:
 

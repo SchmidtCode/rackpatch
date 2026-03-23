@@ -6,6 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+from support import install_croniter_stub
+
+install_croniter_stub()
 
 psycopg_stub = types.ModuleType("psycopg")
 psycopg_stub.Connection = object

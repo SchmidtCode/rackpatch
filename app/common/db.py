@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   name TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,
   cron_expr TEXT NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'UTC',
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   next_run_at TIMESTAMPTZ,
@@ -136,6 +137,26 @@ def init_db() -> None:
             cur.execute("SELECT pg_advisory_lock(84720113)")
             try:
                 cur.execute(SCHEMA)
+                cur.execute("ALTER TABLE schedules ADD COLUMN IF NOT EXISTS timezone TEXT")
+                cur.execute("ALTER TABLE schedules ALTER COLUMN timezone SET DEFAULT 'UTC'")
+                cur.execute("SELECT id, cron_expr FROM schedules WHERE timezone IS NULL OR BTRIM(timezone) = ''")
+                for row in cur.fetchall():
+                    timezone_name = site.maintenance_timezone_name()
+                    cur.execute(
+                        """
+                        UPDATE schedules
+                        SET timezone = %s,
+                            next_run_at = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            timezone_name,
+                            site.schedule_next_run(row["cron_expr"], timezone_name=timezone_name),
+                            row["id"],
+                        ),
+                    )
+                cur.execute("ALTER TABLE schedules ALTER COLUMN timezone SET NOT NULL")
                 cur.execute("SELECT username FROM users WHERE username = %s", (config.ADMIN_USERNAME,))
                 if cur.fetchone() is None:
                     cur.execute(
@@ -176,45 +197,53 @@ def init_db() -> None:
                     )
                 for schedule in site.default_schedules():
                     payload = schedule["payload"]
+                    schedule_timezone = site.schedule_timezone_name(schedule.get("timezone"))
                     cur.execute(
-                        "SELECT id, kind, cron_expr, payload FROM schedules WHERE name = %s",
+                        "SELECT id, kind, cron_expr, timezone, payload, next_run_at FROM schedules WHERE name = %s",
                         (schedule["name"],),
                     )
                     row = cur.fetchone()
                     if row is None:
                         cur.execute(
                             """
-                            INSERT INTO schedules (name, kind, cron_expr, payload, enabled)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO schedules (name, kind, cron_expr, timezone, payload, enabled, next_run_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 schedule["name"],
                                 schedule["kind"],
                                 schedule["cron_expr"],
+                                schedule_timezone,
                                 json.dumps(payload),
                                 False,
+                                site.schedule_next_run(schedule["cron_expr"], timezone_name=schedule_timezone),
                             ),
                         )
                         continue
                     if (
                         row["kind"] != schedule["kind"]
                         or row["cron_expr"] != schedule["cron_expr"]
+                        or site.schedule_timezone_name(row.get("timezone")) != schedule_timezone
                         or (row["payload"] or {}) != payload
+                        or row["next_run_at"] is None
                     ):
                         cur.execute(
                             """
                             UPDATE schedules
                             SET kind = %s,
                                 cron_expr = %s,
+                                timezone = %s,
                                 payload = %s,
-                                next_run_at = NULL,
+                                next_run_at = %s,
                                 updated_at = NOW()
                             WHERE id = %s
                             """,
                             (
                                 schedule["kind"],
                                 schedule["cron_expr"],
+                                schedule_timezone,
                                 json.dumps(payload),
+                                site.schedule_next_run(schedule["cron_expr"], timezone_name=schedule_timezone),
                                 row["id"],
                             ),
                         )

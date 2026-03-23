@@ -27,6 +27,13 @@ TELEGRAM_SESSION = requests.Session()
 STATE = {"api_token": ""}
 
 
+def bot_runtime_blocker_message(telegram_settings: dict[str, Any]) -> str:
+    blockers = [str(item).strip() for item in telegram_settings.get("security_blockers", []) if str(item).strip()]
+    if not blockers:
+        return ""
+    return "telegram bot disabled until insecure defaults are replaced: " + "; ".join(blockers)
+
+
 def load_offset() -> int | None:
     if not OFFSET_FILE.exists():
         return None
@@ -76,6 +83,10 @@ def send_message(chat_id: str, text: str) -> None:
 
 
 def ensure_api_token(force: bool = False) -> str:
+    telegram_settings = runtime_settings.get_telegram_settings(include_secret=True)
+    blocker_message = bot_runtime_blocker_message(telegram_settings)
+    if blocker_message:
+        raise RuntimeError(blocker_message)
     if STATE["api_token"] and not force:
         return STATE["api_token"]
     response = API_SESSION.post(
@@ -510,6 +521,19 @@ def process_update(update: dict[str, Any]) -> None:
         send_message(chat_id, "Telegram is configured without allowed chat IDs. Add at least one in Settings.")
         return
 
+    allowed_user_ids = set(telegram_settings.get("allowed_user_ids") or [])
+    allowed_usernames = {str(item).strip().lstrip("@").lower() for item in telegram_settings.get("allowed_usernames") or [] if str(item).strip()}
+    if allowed_user_ids or allowed_usernames:
+        sender = message.get("from") or {}
+        sender_id = str(sender.get("id", "")).strip()
+        sender_username = str(sender.get("username", "")).strip().lstrip("@").lower()
+        sender_allowed = (sender_id and sender_id in allowed_user_ids) or (
+            sender_username and sender_username in allowed_usernames
+        )
+        if not sender_allowed:
+            send_message(chat_id, "This Telegram user is not authorized for rackpatch.")
+            return
+
     try:
         send_message(chat_id, handle_command(text))
     except Exception as exc:  # noqa: BLE001
@@ -536,6 +560,11 @@ def main() -> int:
         telegram_settings = runtime_settings.get_telegram_settings(include_secret=True)
         if not telegram_settings["bot_token"]:
             print("telegram token is not configured; sleeping", flush=True)
+            time.sleep(IDLE_SLEEP_SECONDS)
+            continue
+        blocker_message = bot_runtime_blocker_message(telegram_settings)
+        if blocker_message:
+            print(blocker_message, flush=True)
             time.sleep(IDLE_SLEEP_SECONDS)
             continue
         try:

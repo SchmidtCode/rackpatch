@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from croniter import croniter
 import yaml
 
 from common import config
@@ -61,6 +64,39 @@ def find_stack(name: str) -> dict[str, Any] | None:
 
 def load_group_vars() -> dict[str, Any]:
     return _load_yaml(group_vars_path())
+
+
+def normalize_timezone_name(value: Any, *, fallback: Any = "UTC") -> str:
+    candidate = str(value or "").strip()
+    fallback_name = str(fallback or "").strip()
+    if not candidate:
+        candidate = fallback_name or "UTC"
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        if fallback_name and fallback_name != candidate:
+            return normalize_timezone_name(fallback_name, fallback="UTC")
+        return "UTC"
+    return candidate
+
+
+def maintenance_timezone_name() -> str:
+    return normalize_timezone_name(load_group_vars().get("maintenance_timezone"), fallback="UTC")
+
+
+def schedule_timezone_name(value: Any = None) -> str:
+    return normalize_timezone_name(value, fallback=maintenance_timezone_name())
+
+
+def schedule_next_run(cron_expr: str, *, timezone_name: Any = None, base: datetime | None = None) -> datetime:
+    current = base or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    zone = ZoneInfo(schedule_timezone_name(timezone_name))
+    next_run = croniter(cron_expr, current.astimezone(zone)).get_next(datetime)
+    if next_run.tzinfo is None:
+        next_run = next_run.replace(tzinfo=zone)
+    return next_run.astimezone(timezone.utc)
 
 
 def load_maintenance() -> dict[str, Any]:
@@ -127,12 +163,14 @@ def group_hosts(group_name: str) -> list[str]:
 
 def default_schedules() -> list[dict[str, Any]]:
     windows = load_group_vars().get("default_windows", {})
+    timezone_name = maintenance_timezone_name()
     stack_names = [stack["name"] for stack in load_defined_stacks() if stack.get("name")]
     return [
         {
             "name": "Daily Docker Stack Check",
             "kind": "docker_check",
             "cron_expr": windows.get("docker_check_daily", "45 5 * * *"),
+            "timezone": timezone_name,
             "payload": {
                 "executor": "agent",
                 "target_ref": "full-stack-catalog",
@@ -145,6 +183,7 @@ def default_schedules() -> list[dict[str, Any]]:
             "name": "Host Package Check",
             "kind": "package_check",
             "cron_expr": windows.get("host_package_check", "15 5 * * *"),
+            "timezone": timezone_name,
             "payload": {
                 "executor": "agent",
                 "scope": "guests",
@@ -157,6 +196,7 @@ def default_schedules() -> list[dict[str, Any]]:
             "name": "Guest OS Patch Approval",
             "kind": "package_patch",
             "cron_expr": windows.get("guest_patch_approval", windows.get("approved_guest_container", "0 4 * * 6")),
+            "timezone": timezone_name,
             "payload": {
                 "executor": "agent",
                 "target_ref": "guests",
@@ -170,6 +210,7 @@ def default_schedules() -> list[dict[str, Any]]:
             "name": "Docker Stack Update Approval",
             "kind": "docker_update",
             "cron_expr": windows.get("docker_update_approval", windows.get("docker_auto", "30 5 * * 6")),
+            "timezone": timezone_name,
             "payload": {
                 "executor": "agent",
                 "target_ref": "full-stack-catalog",
@@ -183,6 +224,7 @@ def default_schedules() -> list[dict[str, Any]]:
             "name": "Proxmox Node Patch Approval",
             "kind": "proxmox_patch",
             "cron_expr": windows.get("proxmox_patch_approval", windows.get("proxmox_nodes", "30 4 * * 0")),
+            "timezone": timezone_name,
             "payload": {
                 "executor": "agent",
                 "target_ref": "proxmox_nodes",

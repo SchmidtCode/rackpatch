@@ -10,15 +10,8 @@ RUN apt-get update \
         git \
         jq \
         rsync \
+        sudo \
     && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-    ansible-core==2.18.3 \
-    croniter \
-    docker \
-    jmespath \
-    netaddr \
-    requests
 
 COPY requirements-rackpatch.txt /tmp/requirements-rackpatch.txt
 COPY requirements.yml /tmp/requirements.yml

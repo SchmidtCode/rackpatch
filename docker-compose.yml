@@ -118,10 +118,10 @@ services:
         condition: service_healthy
     environment:
       RACKPATCH_SERVER_URL: http://api:9080
-      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: rackpatch-bootstrap-Pa7Vs1RjC2f1grQnF2W04UtFJjuc8p93
-      RACKPATCH_AGENT_NAME: core-vm
-      RACKPATCH_AGENT_DISPLAY_NAME: core-vm (self-agent)
-      RACKPATCH_AGENT_LABELS: control-plane,self-agent
+      RACKPATCH_AGENT_BOOTSTRAP_TOKEN: ${RACKPATCH_SELF_AGENT_BOOTSTRAP_TOKEN:-bootstrap-me}
+      RACKPATCH_AGENT_NAME: ${RACKPATCH_SELF_AGENT_NAME:-self-agent}
+      RACKPATCH_AGENT_DISPLAY_NAME: ${RACKPATCH_SELF_AGENT_DISPLAY_NAME:-self-agent}
+      RACKPATCH_AGENT_LABELS: ${RACKPATCH_SELF_AGENT_LABELS:-control-plane,self-agent}
       RACKPATCH_AGENT_MODE: compose
       RACKPATCH_AGENT_COMPOSE_DIR: ${RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR:-/srv/compose/rackpatch}
       RACKPATCH_AGENT_STACK_ROOTS: ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}

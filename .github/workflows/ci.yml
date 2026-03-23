@@ -42,7 +42,7 @@ jobs:
       matrix:
         include:
           - image_name: rackpatch
-            dockerfile: Dockerfile.rackpatch
+            dockerfile: Dockerfile
           - image_name: rackpatch-agent
             dockerfile: Dockerfile.agent
           - image_name: rackpatch-web
