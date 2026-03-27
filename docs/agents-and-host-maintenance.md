@@ -42,7 +42,7 @@ curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts
 Example container install:
 
 ```bash
-RELEASE_TAG=v0.4.0
+RELEASE_TAG=v0.4.1
 RELEASE_VERSION="${RELEASE_TAG#v}"
 AGENT_DIR=/opt/rackpatch-agent
 
@@ -57,7 +57,7 @@ curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TA
 Example systemd install:
 
 ```bash
-RELEASE_TAG=v0.4.0
+RELEASE_TAG=v0.4.1
 AGENT_DIR=/opt/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/install-agent.sh" | sudo bash -s -- \
@@ -72,7 +72,7 @@ curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TA
 Example stack update:
 
 ```bash
-RELEASE_TAG=v0.4.0
+RELEASE_TAG=v0.4.1
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/update-rackpatch.sh" | bash -s -- \
   --install-dir /srv/compose/rackpatch \
@@ -87,7 +87,7 @@ Host maintenance is a separate opt-in step. The base agent install stays focused
 Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
-RELEASE_TAG=v0.4.0
+RELEASE_TAG=v0.4.1
 AGENT_DIR=/srv/compose/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
@@ -101,7 +101,7 @@ curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TA
 Example host-maintenance enablement for Proxmox nodes:
 
 ```bash
-RELEASE_TAG=v0.4.0
+RELEASE_TAG=v0.4.1
 AGENT_DIR=/opt/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
