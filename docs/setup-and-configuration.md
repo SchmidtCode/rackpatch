@@ -82,6 +82,8 @@ For local source builds while developing on the repo:
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --remove-orphans
 ```
 
+For the fuller day-to-day development loop, see [Development](development.md).
+
 ## Site overlays
 
 Tracked defaults use the example overlay:

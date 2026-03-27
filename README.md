@@ -113,6 +113,7 @@ The UI writes changes back to the active inventory file and preserves existing a
 
 - [Docs index](docs/README.md)
 - [Setup and configuration](docs/setup-and-configuration.md)
+- [Development](docs/development.md)
 - [Agents and host maintenance](docs/agents-and-host-maintenance.md)
 - [Automation and control surfaces](docs/automation-and-control-surfaces.md)
 - [Release and publishing](docs/release-and-publishing.md)
