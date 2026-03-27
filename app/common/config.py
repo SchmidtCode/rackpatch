@@ -12,7 +12,7 @@ def env(name: str, default: str) -> str:
 
 
 APP_NAME = "rackpatch"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION}"
 GITHUB_REPO_PREFIXES = (
     "https://github.com/",
