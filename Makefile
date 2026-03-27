@@ -31,7 +31,15 @@ rollback:
 	$(EXEC) python3 scripts/rollback_stack.py --stack $(STACK)
 
 validate:
-	./scripts/validate-policy.py
+	@if ! ./scripts/validate-policy.py; then \
+		if $(DC) ps -q api | grep -q .; then \
+			echo "host Python deps missing, retrying validate-policy.py in the running api container"; \
+			$(EXEC) python3 scripts/validate-policy.py; \
+		else \
+			echo "validate-policy.py needs project Python deps on the host, or a running api container for fallback" >&2; \
+			exit 1; \
+		fi; \
+	fi
 	python3 -m compileall app scripts/host-maintenance >/dev/null
 	bash -n scripts/install-agent.sh scripts/update-agent.sh scripts/enable-agent-host-maintenance.sh
 

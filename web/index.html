@@ -124,9 +124,39 @@
             <section class="panel">
               <div class="section-head">
                 <h3>Hosts</h3>
-                <p>Inventory, agent state, and patch actions in one view.</p>
+                <p>Inventory, agent state, patch actions, and direct edit controls in one view.</p>
               </div>
               <div id="hosts-table" class="table-shell"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h3>Manage Hosts</h3>
+                <p>Create, edit, or remove common inventory entries without leaving the UI.</p>
+              </div>
+              <form id="host-form" class="stack-form">
+                <input id="host-name" type="text" placeholder="Host name, for example servarr" />
+                <input id="host-group" type="text" list="host-groups" placeholder="docker_hosts or proxmox_nodes" />
+                <datalist id="host-groups"></datalist>
+                <input id="host-ansible-host" type="text" placeholder="192.168.1.105" />
+                <input id="host-ansible-user" type="text" placeholder="root" />
+                <input id="host-compose-root" type="text" placeholder="/srv/compose" />
+                <input id="host-maintenance-tier" type="text" placeholder="apps, media, core" />
+                <input id="host-proxmox-node-name" type="text" placeholder="pve" />
+                <input id="host-guest-type" type="text" placeholder="qemu or lxc" />
+                <input id="host-proxmox-guest-id" type="text" placeholder="102" />
+                <input id="host-guest-ids" type="text" placeholder="101,102" />
+                <input id="host-soft-reboot-guest-order" type="text" placeholder="102,101" />
+                <label class="checkbox-row">
+                  <input id="host-control-plane" type="checkbox" />
+                  Mark as the rackpatch control-plane host
+                </label>
+                <div class="topbar-actions">
+                  <button type="submit">Save Host</button>
+                  <button id="host-form-reset" type="button" class="secondary">Clear</button>
+                </div>
+              </form>
+              <div id="host-editor-meta" class="meta-block"></div>
+              <p id="host-form-result" class="hint"></p>
             </section>
           </section>
 

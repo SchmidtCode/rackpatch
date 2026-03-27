@@ -157,6 +157,134 @@ def _host_runtime(agent: dict[str, Any] | None, host: dict[str, Any], *, control
     }
 
 
+HOST_TEXT_FIELDS = (
+    "ansible_host",
+    "ansible_user",
+    "compose_root",
+    "maintenance_tier",
+    "proxmox_node_name",
+    "guest_type",
+)
+HOST_INT_FIELDS = ("proxmox_guest_id",)
+HOST_INT_LIST_FIELDS = ("guest_ids", "soft_reboot_guest_order")
+HOST_BOOL_FIELDS = ("rackpatch_control_plane",)
+
+
+def _normalize_host_int_list(value: Any, field_name: str) -> list[int]:
+    raw_items = value if isinstance(value, list) else str(value or "").split(",")
+    items: list[int] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if not text.isdigit():
+            raise HTTPException(status_code=400, detail=f"{field_name} entries must be numeric")
+        items.append(int(text))
+    return items
+
+
+def _normalize_host_int(value: Any, field_name: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise HTTPException(status_code=400, detail=f"{field_name} must be numeric")
+    return int(text)
+
+
+def _normalize_host_payload(payload: dict[str, Any], *, existing: dict[str, Any] | None = None) -> tuple[str, str, dict[str, Any]]:
+    existing_host = dict(existing or {})
+    current_name = str(existing_host.pop("name", "") or "").strip()
+    current_group = str(existing_host.pop("group", "") or "").strip()
+
+    host_name = str(payload.get("name") or current_name).strip()
+    if not host_name:
+        raise HTTPException(status_code=400, detail="host name is required")
+    group_name = str(payload.get("group") or current_group or "all").strip() or "all"
+
+    host_data = dict(existing_host)
+    for field_name in HOST_TEXT_FIELDS:
+        if field_name not in payload:
+            continue
+        text = str(payload.get(field_name) or "").strip()
+        if text:
+            host_data[field_name] = text
+        else:
+            host_data.pop(field_name, None)
+    for field_name in HOST_INT_FIELDS:
+        if field_name not in payload:
+            continue
+        value = _normalize_host_int(payload.get(field_name), field_name)
+        if value is None:
+            host_data.pop(field_name, None)
+        else:
+            host_data[field_name] = value
+    for field_name in HOST_INT_LIST_FIELDS:
+        if field_name not in payload:
+            continue
+        values = _normalize_host_int_list(payload.get(field_name), field_name)
+        if values:
+            host_data[field_name] = values
+        else:
+            host_data.pop(field_name, None)
+    for field_name in HOST_BOOL_FIELDS:
+        if field_name not in payload:
+            continue
+        if bool(payload.get(field_name)):
+            host_data[field_name] = True
+        else:
+            host_data.pop(field_name, None)
+    return host_name, group_name, host_data
+
+
+def _host_item(
+    host: dict[str, Any],
+    *,
+    known_agents: dict[str, dict[str, Any]],
+    base_identities: set[str],
+) -> dict[str, Any]:
+    agent = known_agents.get(host["name"])
+    control_plane_host = _is_control_plane_host(host, base_identities)
+    return {
+        **host,
+        "agent": agent,
+        "control_plane_host": control_plane_host,
+        "runtime": _host_runtime(agent, host, control_plane_host=control_plane_host),
+        "job_access": {
+            "package_check": jobs.host_job_access("package_check", host["name"]),
+            "package_patch_dry_run": jobs.host_job_access("package_patch", host["name"], {"dry_run": True}),
+            "package_patch_live": jobs.host_job_access("package_patch", host["name"], {"dry_run": False}),
+            "proxmox_patch_dry_run": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": True}),
+            "proxmox_patch_live": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": False}),
+            "proxmox_reboot_dry_run": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": True}),
+            "proxmox_reboot_live": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": False}),
+        },
+    }
+
+
+def _hosts_payload() -> dict[str, Any]:
+    public_settings = runtime_settings.get_public_settings()
+    base_identities = _public_base_host_identities(public_settings)
+    known_agents = {
+        row["name"]: agent_records.with_effective_status(row)
+        for row in db.fetch_all(
+            """
+            SELECT id, name, display_name, status, capabilities, metadata, last_seen_at
+            FROM agents
+            ORDER BY name
+            """
+        )
+    }
+    return {
+        "items": [
+            _host_item(host, known_agents=known_agents, base_identities=base_identities)
+            for host in site.load_hosts()
+        ],
+        "groups": site.load_groups(),
+        "inventory_path": str(site.inventory_path()),
+    }
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -560,40 +688,41 @@ def docker_updates(username: str = Depends(auth.require_user)) -> dict[str, Any]
 @app.get("/api/v1/hosts")
 def hosts(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
-    public_settings = runtime_settings.get_public_settings()
-    base_identities = _public_base_host_identities(public_settings)
-    known_agents = {
-        row["name"]: agent_records.with_effective_status(row)
-        for row in db.fetch_all(
-            """
-            SELECT id, name, display_name, status, capabilities, metadata, last_seen_at
-            FROM agents
-            ORDER BY name
-            """
-        )
-    }
-    items = []
-    for host in site.load_hosts():
-        agent = known_agents.get(host["name"])
-        control_plane_host = _is_control_plane_host(host, base_identities)
-        items.append(
-            {
-                **host,
-                "agent": agent,
-                "control_plane_host": control_plane_host,
-                "runtime": _host_runtime(agent, host, control_plane_host=control_plane_host),
-                "job_access": {
-                    "package_check": jobs.host_job_access("package_check", host["name"]),
-                    "package_patch_dry_run": jobs.host_job_access("package_patch", host["name"], {"dry_run": True}),
-                    "package_patch_live": jobs.host_job_access("package_patch", host["name"], {"dry_run": False}),
-                    "proxmox_patch_dry_run": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": True}),
-                    "proxmox_patch_live": jobs.host_job_access("proxmox_patch", host["name"], {"dry_run": False}),
-                    "proxmox_reboot_dry_run": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": True}),
-                    "proxmox_reboot_live": jobs.host_job_access("proxmox_reboot", host["name"], {"dry_run": False}),
-                },
-            }
-        )
-    return {"items": items}
+    return _hosts_payload()
+
+
+@app.post("/api/v1/hosts")
+def create_host(payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    host_name, group_name, host_data = _normalize_host_payload(payload)
+    if site.find_host(host_name) is not None:
+        raise HTTPException(status_code=409, detail=f"host {host_name} already exists")
+    site.upsert_host("", host_name, group_name, host_data)
+    return _hosts_payload()
+
+
+@app.put("/api/v1/hosts/{host_name}")
+def update_host(host_name: str, payload: dict[str, Any], username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    existing = site.find_host(host_name)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"host {host_name} was not found")
+    next_name, group_name, host_data = _normalize_host_payload(payload, existing=existing)
+    if next_name != host_name and site.find_host(next_name) is not None:
+        raise HTTPException(status_code=409, detail=f"host {next_name} already exists")
+    try:
+        site.upsert_host(host_name, next_name, group_name, host_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _hosts_payload()
+
+
+@app.delete("/api/v1/hosts/{host_name}")
+def delete_host(host_name: str, username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    if not site.delete_host(host_name):
+        raise HTTPException(status_code=404, detail=f"host {host_name} was not found")
+    return _hosts_payload()
 
 
 @app.get("/api/v1/agents")

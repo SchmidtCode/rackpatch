@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  enable-agent-host-maintenance.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--socket-path PATH] [--helper-user USER] [--preset packages|proxmox|all] [--allow-actions action1,action2] [--install-source PATH_OR_REPO] [--install-ref REF]
+  enable-agent-host-maintenance.sh --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--socket-path PATH] [--helper-user USER] [--preset packages|proxmox|all|packages+proxmox] [--allow-actions action1,action2] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -105,6 +105,21 @@ socket_group_id() {
     return 0
   fi
   stat -c '%g' "${path}" 2>/dev/null || true
+}
+
+wait_for_helper_socket() {
+  local attempts="${1:-30}"
+  local sleep_seconds="${2:-1}"
+  local count=0
+  while (( count < attempts )); do
+    if [[ -S "${socket_path}" ]]; then
+      return 0
+    fi
+    sleep "${sleep_seconds}"
+    ((count+=1))
+  done
+  echo "helper socket was not created at ${socket_path}" >&2
+  exit 1
 }
 
 resolve_actions() {
@@ -310,6 +325,7 @@ restart_helper_service() {
   systemctl daemon-reload
   systemctl enable --now rackpatch-host-helper.service
   systemctl restart rackpatch-host-helper.service
+  wait_for_helper_socket
 }
 
 detect_compose_target() {
@@ -341,10 +357,9 @@ detect_compose_target() {
 }
 
 write_compose_override() {
-  local socket_dir helper_socket_gid docker_socket_gid
+  local socket_dir helper_socket_gid
   socket_dir="$(dirname "${socket_path}")"
   helper_socket_gid="$(socket_group_id "${socket_path}")"
-  docker_socket_gid="$(socket_group_id /var/run/docker.sock)"
   if [[ -z "${compose_override_file}" ]]; then
     return
   fi
@@ -356,20 +371,13 @@ services:
     volumes:
       - ${socket_dir}:${socket_dir}
 EOF
-  if [[ "${docker_socket_gid}" =~ ^[0-9]+$ || "${helper_socket_gid}" =~ ^[0-9]+$ ]]; then
+  if [[ "${helper_socket_gid}" =~ ^[0-9]+$ ]]; then
     cat >> "${compose_override_file}" <<EOF
     group_add:
 EOF
-    if [[ "${docker_socket_gid}" =~ ^[0-9]+$ ]]; then
-      cat >> "${compose_override_file}" <<EOF
-      - "${docker_socket_gid}"
-EOF
-    fi
-    if [[ "${helper_socket_gid}" =~ ^[0-9]+$ && "${helper_socket_gid}" != "${docker_socket_gid}" ]]; then
-      cat >> "${compose_override_file}" <<EOF
+    cat >> "${compose_override_file}" <<EOF
       - "${helper_socket_gid}"
 EOF
-    fi
   fi
 }
 
@@ -389,9 +397,9 @@ restart_compose_agent() {
     compose_options+=(--profile "${compose_profile}")
   fi
   if grep -q '^[[:space:]]*build:' "${compose_file}"; then
-    docker compose "${files[@]}" "${compose_options[@]}" up -d --build "${compose_service}"
+    docker compose "${files[@]}" "${compose_options[@]}" up -d --build --force-recreate "${compose_service}"
   else
-    docker compose "${files[@]}" "${compose_options[@]}" up -d "${compose_service}"
+    docker compose "${files[@]}" "${compose_options[@]}" up -d --force-recreate "${compose_service}"
   fi
 }
 

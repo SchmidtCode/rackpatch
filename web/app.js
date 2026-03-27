@@ -20,6 +20,11 @@ const jobEvents = document.getElementById("job-events");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const siteChip = document.getElementById("site-chip");
+const hostForm = document.getElementById("host-form");
+const hostFormResetButton = document.getElementById("host-form-reset");
+const hostFormResult = document.getElementById("host-form-result");
+const hostEditorMeta = document.getElementById("host-editor-meta");
+const hostGroupsDataList = document.getElementById("host-groups");
 const jobLogPanel = document.getElementById("job-log-panel");
 const jobLogExpandButton = document.getElementById("job-log-expand");
 const jobKindSelect = document.getElementById("job-kind");
@@ -49,6 +54,7 @@ const fleetUpdateCommands = document.getElementById("fleet-update-commands");
 const fleetUpdateQueueButton = document.getElementById("fleet-update-queue");
 const fleetUpdateCopyButton = document.getElementById("fleet-update-copy");
 const appVersionNodes = document.querySelectorAll("[data-app-version]");
+const DEFAULT_HOST_GROUPS = ["all", "docker_hosts", "guests", "proxmox_nodes"];
 
 const FALLBACK_JOB_KIND = {
   kind: "docker_update",
@@ -406,6 +412,84 @@ function setInputValue(id, value) {
     return;
   }
   element.value = value;
+}
+
+function setCheckboxValue(id, checked) {
+  const element = document.getElementById(id);
+  if (document.activeElement === element) {
+    return;
+  }
+  element.checked = Boolean(checked);
+}
+
+function currentHostEditorName() {
+  return hostForm?.dataset.originalName || "";
+}
+
+function parseCsvIntegers(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(",");
+}
+
+function hostFormPayload() {
+  return {
+    name: document.getElementById("host-name").value.trim(),
+    group: document.getElementById("host-group").value.trim() || "all",
+    ansible_host: document.getElementById("host-ansible-host").value.trim(),
+    ansible_user: document.getElementById("host-ansible-user").value.trim(),
+    compose_root: document.getElementById("host-compose-root").value.trim(),
+    maintenance_tier: document.getElementById("host-maintenance-tier").value.trim(),
+    proxmox_node_name: document.getElementById("host-proxmox-node-name").value.trim(),
+    guest_type: document.getElementById("host-guest-type").value.trim(),
+    proxmox_guest_id: document.getElementById("host-proxmox-guest-id").value.trim(),
+    guest_ids: parseCsvIntegers(document.getElementById("host-guest-ids").value),
+    soft_reboot_guest_order: parseCsvIntegers(document.getElementById("host-soft-reboot-guest-order").value),
+    rackpatch_control_plane: document.getElementById("host-control-plane").checked,
+  };
+}
+
+function populateHostEditor(host = null) {
+  hostForm.dataset.originalName = host?.name || "";
+  setInputValue("host-name", host?.name || "");
+  setInputValue("host-group", host?.group || "all");
+  setInputValue("host-ansible-host", host?.ansible_host || "");
+  setInputValue("host-ansible-user", host?.ansible_user || "");
+  setInputValue("host-compose-root", host?.compose_root || "");
+  setInputValue("host-maintenance-tier", host?.maintenance_tier || "");
+  setInputValue("host-proxmox-node-name", host?.proxmox_node_name || "");
+  setInputValue("host-guest-type", host?.guest_type || "");
+  setInputValue("host-proxmox-guest-id", host?.proxmox_guest_id || "");
+  setInputValue("host-guest-ids", Array.isArray(host?.guest_ids) ? host.guest_ids.join(",") : "");
+  setInputValue(
+    "host-soft-reboot-guest-order",
+    Array.isArray(host?.soft_reboot_guest_order) ? host.soft_reboot_guest_order.join(",") : ""
+  );
+  setCheckboxValue("host-control-plane", Boolean(host?.rackpatch_control_plane));
+  hostFormResult.textContent = host
+    ? `Editing ${host.name}. Save to update ${entitiesState.hosts.inventory_path || "inventory/hosts.yml"}.`
+    : "Create a host entry in the active site inventory.";
+}
+
+function syncHostEditorOptions() {
+  const reportedGroups = Array.isArray(entitiesState.hosts?.groups) ? entitiesState.hosts.groups : [];
+  const groups = [...new Set([...DEFAULT_HOST_GROUPS, ...reportedGroups].filter(Boolean))].sort((left, right) =>
+    left.localeCompare(right)
+  );
+  if (hostGroupsDataList) {
+    hostGroupsDataList.innerHTML = groups.map((group) => `<option value="${escapeHtml(group)}"></option>`).join("");
+  }
+  if (hostEditorMeta) {
+    hostEditorMeta.textContent = [
+      `Inventory file: ${entitiesState.hosts?.inventory_path || entitiesState.settings?.inventory_path || "unknown"}`,
+      `Known groups: ${groups.join(", ") || "none"}`,
+      currentHostEditorName()
+        ? `Current edit target: ${currentHostEditorName()}`
+        : "New hosts are written back to the active site inventory.",
+    ].join("\n");
+  }
 }
 
 function formatDockerVersion(ref, short) {
@@ -1388,12 +1472,19 @@ function renderHosts() {
           <td>${group}</td>
           <td><span class="mono">${address}</span></td>
           <td>${agentCell}</td>
-          <td><div class="table-actions">${actionButtons}</div></td>
+          <td>
+            <div class="table-actions">
+              ${actionButtons}
+              <button class="secondary" data-host-edit="${hostName}">Edit</button>
+              <button class="danger" data-host-delete="${hostName}">Delete</button>
+            </div>
+          </td>
         </tr>
       `;
     }),
     "No hosts configured."
   );
+  syncHostEditorOptions();
 }
 
 function renderAgents() {
@@ -2152,6 +2243,60 @@ async function savePublicSettings() {
   showFlash("Saved public repo settings.");
 }
 
+async function saveHost() {
+  const payload = hostFormPayload();
+  if (!payload.name) {
+    throw new Error("Host name is required.");
+  }
+  const originalName = currentHostEditorName();
+  const isEdit = Boolean(originalName);
+  const path = isEdit ? `/api/v1/hosts/${encodeURIComponent(originalName)}` : "/api/v1/hosts";
+  const method = isEdit ? "PUT" : "POST";
+  await api(path, {
+    method,
+    body: JSON.stringify(payload),
+  });
+  await refreshDashboard();
+  populateHostEditor();
+  syncHostEditorOptions();
+  hostFormResult.textContent = isEdit
+    ? `Saved host ${payload.name}.`
+    : `Created host ${payload.name}.`;
+  showFlash(isEdit ? `Saved host ${payload.name}.` : `Created host ${payload.name}.`);
+}
+
+async function deleteHostEntry(hostName) {
+  if (!hostName) {
+    return;
+  }
+  const confirmed = window.confirm(`Delete host ${hostName} from the inventory?`);
+  if (!confirmed) {
+    return;
+  }
+  await api(`/api/v1/hosts/${encodeURIComponent(hostName)}`, { method: "DELETE" });
+  await refreshDashboard();
+  if (currentHostEditorName() === hostName) {
+    populateHostEditor();
+  }
+  syncHostEditorOptions();
+  hostFormResult.textContent = `Deleted host ${hostName}.`;
+  showFlash(`Deleted host ${hostName}.`);
+}
+
+function editHostEntry(hostName) {
+  const host = (entitiesState.hosts?.items || []).find((item) => item.name === hostName);
+  if (!host) {
+    showFlash(`Host ${hostName} was not found.`, "error");
+    return;
+  }
+  populateHostEditor(host);
+  syncHostEditorOptions();
+  if (uiState.currentPage !== "hosts") {
+    setPage("hosts");
+  }
+  document.getElementById("host-name").focus();
+}
+
 async function saveDockerUpdateSettings() {
   const retentionValue = document.getElementById("docker-backup-retention").value;
   await api("/api/v1/settings/docker-updates", {
@@ -2457,6 +2602,16 @@ document.getElementById("agent-token-form").addEventListener("submit", async (ev
   await createAgentToken();
 });
 
+hostForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveHost();
+});
+
+hostFormResetButton.addEventListener("click", () => {
+  populateHostEditor();
+  syncHostEditorOptions();
+});
+
 appScreen.addEventListener("change", (event) => {
   const jobSelect = event.target.closest("[data-job-select]");
   if (jobSelect) {
@@ -2614,6 +2769,18 @@ const appClickHandler = createDelegatedHandler([
     },
   },
   {
+    selector: "[data-host-edit]",
+    handler: (node) => {
+      editHostEntry(node.dataset.hostEdit);
+    },
+  },
+  {
+    selector: "[data-host-delete]",
+    handler: async (node) => {
+      await deleteHostEntry(node.dataset.hostDelete);
+    },
+  },
+  {
     selector: "[data-job-log]",
     handler: async (node) => {
       await selectJob(node.dataset.jobLog);
@@ -2710,6 +2877,8 @@ appScreen.addEventListener("click", async (event) => {
 window.addEventListener("hashchange", syncPageFromHash);
 
 async function bootstrap() {
+  populateHostEditor();
+  syncHostEditorOptions();
   await loadAppVersion();
   syncPageFromHash();
 
@@ -2729,7 +2898,8 @@ async function bootstrap() {
     if (
       document.activeElement &&
       (document.activeElement.closest('[data-page="settings"] form') ||
-        document.activeElement.closest("#job-form"))
+        document.activeElement.closest("#job-form") ||
+        document.activeElement.closest("#host-form"))
     ) {
       return;
     }

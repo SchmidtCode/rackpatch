@@ -36,6 +36,8 @@ Machine-friendly endpoints:
 - `/api/v1/jobs`: recent jobs
 - `/api/v1/jobs/<job-id>/events`: job logs
 - `/api/v1/settings`: public repo and Telegram settings
+- `/api/v1/hosts`: list hosts or create a new host inventory entry
+- `/api/v1/hosts/<host-name>`: update or delete a host inventory entry
 
 If you need browser access from another origin, set `RACKPATCH_CORS_ORIGINS` to a comma-separated allowlist. The default posture is same-origin only.
 
