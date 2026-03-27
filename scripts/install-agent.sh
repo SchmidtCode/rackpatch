@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--stack-root DIR] [--name NAME] [--labels a,b] [--image IMAGE] [--install-source PATH_OR_REPO] [--install-ref REF]
+  install-agent.sh --server-url URL --bootstrap-token TOKEN --mode compose|container|systemd [--compose-dir DIR] [--install-dir DIR] [--stack-root DIR] [--name NAME] [--labels a,b] [--image IMAGE] [--security-opt VALUE] [--install-source PATH_OR_REPO] [--install-ref REF]
 EOF
 }
 
@@ -24,6 +24,7 @@ systemd_agent_user="rackpatch-agent"
 compose_override_name="compose.host-maintenance.yml"
 agent_env_name="agent.env"
 stack_roots=()
+security_opts=()
 
 add_stack_root() {
   local value="${1:-}"
@@ -71,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       compose_dir="$2"
       shift 2
       ;;
+    --install-dir)
+      install_dir="$2"
+      shift 2
+      ;;
     --stack-root)
       add_stack_root "$2"
       shift 2
@@ -85,6 +90,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image)
       image="$2"
+      shift 2
+      ;;
+    --security-opt)
+      security_opts+=("$2")
       shift 2
       ;;
     --install-source)
@@ -210,6 +219,10 @@ write_image_env() {
   cat > "${target_dir}/${agent_env_name}" <<EOF
 RACKPATCH_AGENT_IMAGE=${agent_image}
 EOF
+  # Mirror into .env so standard docker compose commands work in the install dir.
+  cat > "${target_dir}/.env" <<EOF
+RACKPATCH_AGENT_IMAGE=${agent_image}
+EOF
 }
 
 socket_group_id() {
@@ -298,6 +311,18 @@ EOF
     group_add:
       - "${docker_socket_gid}"
 EOF
+  fi
+  if [[ ${#security_opts[@]} -gt 0 ]]; then
+    cat >> "${target_dir}/compose.yml" <<EOF
+    security_opt:
+EOF
+    local security_opt escaped_security_opt
+    for security_opt in "${security_opts[@]}"; do
+      escaped_security_opt="${security_opt//\"/\\\"}"
+      cat >> "${target_dir}/compose.yml" <<EOF
+      - "${escaped_security_opt}"
+EOF
+    done
   fi
   cat >> "${target_dir}/compose.yml" <<EOF
     volumes:

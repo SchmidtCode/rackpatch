@@ -57,7 +57,7 @@ services:
       TZ: ${TZ:-America/New_York}
     volumes:
       - ./data:/data
-      - ./sites:/opt/rackpatch/sites
+      - rackpatch-sites-data:/opt/rackpatch/sites
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
@@ -104,7 +104,7 @@ services:
       TZ: ${TZ:-America/New_York}
     volumes:
       - ./data:/data
-      - ./sites:/opt/rackpatch/sites:ro
+      - rackpatch-sites-data:/opt/rackpatch/sites
       - ${RACKPATCH_COMPOSE_ROOT:-/srv/compose}:${RACKPATCH_COMPOSE_ROOT:-/srv/compose}
       - /var/run/docker.sock:/var/run/docker.sock
 
@@ -170,7 +170,7 @@ services:
       TZ: ${TZ:-America/New_York}
     volumes:
       - ./data:/data
-      - ./sites:/opt/rackpatch/sites:ro
+      - rackpatch-sites-data:/opt/rackpatch/sites
 
   notify:
     image: ${RACKPATCH_IMAGE_NAMESPACE:-ghcr.io/schmidtcode}/rackpatch:${RACKPATCH_VERSION:-latest}
@@ -201,3 +201,6 @@ volumes:
   rackpatch-db-data:
     name: ${RACKPATCH_DB_VOLUME:-rackpatch-db-data}
     external: ${RACKPATCH_DB_VOLUME_EXTERNAL:-false}
+  rackpatch-sites-data:
+    name: ${RACKPATCH_SITES_VOLUME:-rackpatch-sites-data}
+    external: ${RACKPATCH_SITES_VOLUME_EXTERNAL:-false}

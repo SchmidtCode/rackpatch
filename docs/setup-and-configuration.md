@@ -2,11 +2,29 @@
 
 ## Base install
 
+Choose any install directory you want and reuse it consistently in the commands below.
+
+### Option 1: clone the repo
+
 ```bash
-cd /srv/compose/rackpatch
-cp .env.example .env
-docker compose pull
-docker compose up -d --remove-orphans
+RACKPATCH_DIR=/srv/compose/rackpatch
+
+git clone https://github.com/SchmidtCode/rackpatch.git "${RACKPATCH_DIR}"
+cp "${RACKPATCH_DIR}/.env.example" "${RACKPATCH_DIR}/.env"
+docker compose -f "${RACKPATCH_DIR}/docker-compose.yml" --env-file "${RACKPATCH_DIR}/.env" pull
+docker compose -f "${RACKPATCH_DIR}/docker-compose.yml" --env-file "${RACKPATCH_DIR}/.env" up -d --remove-orphans
+```
+
+### Option 2: run the published stack without cloning
+
+```bash
+RACKPATCH_DIR=/srv/compose/rackpatch
+
+mkdir -p "${RACKPATCH_DIR}"
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/.env.example -o "${RACKPATCH_DIR}/.env"
+curl -fsSL https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/docker-compose.published.yml -o "${RACKPATCH_DIR}/docker-compose.yml"
+docker compose -f "${RACKPATCH_DIR}/docker-compose.yml" --env-file "${RACKPATCH_DIR}/.env" pull
+docker compose -f "${RACKPATCH_DIR}/docker-compose.yml" --env-file "${RACKPATCH_DIR}/.env" up -d --remove-orphans
 ```
 
 The UI is available at `http://<host>:3011`.
@@ -17,6 +35,10 @@ Default bootstrap login:
 - Password: value of `RACKPATCH_ADMIN_PASSWORD`
 
 If `RACKPATCH_AGENT_BOOTSTRAP_TOKEN=bootstrap-me`, rackpatch generates a stable bootstrap token on first start and exposes it in `Settings`.
+
+The published-stack path uses the example site catalog baked into the published images. If you want local site overlays, source-build tooling, or the full repo layout, use the clone path.
+
+The published compose file also creates a persistent `rackpatch-sites-data` volume for `/opt/rackpatch/sites`, so UI or API inventory edits survive container recreation.
 
 ## Key `.env` settings
 
@@ -112,3 +134,31 @@ After changing public repo settings, rebuild the services that expose generated 
 ```bash
 docker compose up -d api web telegram
 ```
+
+Generated agent install commands in `Settings` can be edited before you run them. The most common changes are:
+
+- change the leading `AGENT_DIR=...` assignment to your preferred install path
+- add `--security-opt apparmor=unconfined` for compose-mode agents on hosts where Docker blocks Unix sockets inside the agent container
+
+Generated helper commands can also be edited before you run them. The most common change on Proxmox nodes is replacing `--preset packages` with `--preset all` or `--preset proxmox`, depending on whether you want package actions, Proxmox actions, or both.
+
+The generated compose install uses `--compose-dir "${AGENT_DIR}"`. The generated container and systemd installs use `--install-dir "${AGENT_DIR}"`.
+
+## Host inventory management
+
+Hosts are stored in the active site inventory file:
+
+```text
+sites/<site>/inventory/hosts.yml
+```
+
+On the published-image quick-start path, that tree lives in the `rackpatch-sites-data` Docker volume at `/opt/rackpatch/sites` inside the containers.
+
+You can manage common host fields from the `Hosts` page in the web UI, or through the API:
+
+- `GET /api/v1/hosts`
+- `POST /api/v1/hosts`
+- `PUT /api/v1/hosts/{host_name}`
+- `DELETE /api/v1/hosts/{host_name}`
+
+The UI is intended for the common fields used in most homelab bring-up paths such as `ansible_host`, `ansible_user`, `compose_root`, `maintenance_tier`, `proxmox_node_name`, guest IDs, and the control-plane flag. Existing extra keys already present in inventory are preserved when you edit a host through the UI or API.

@@ -11,6 +11,11 @@ The `Settings` page exposes exact generated commands for agent install and updat
 - `RACKPATCH_PUBLIC_RACKPATCH_COMPOSE_DIR`
 - the current bootstrap token
 
+Those generated commands are the preferred install path. Before you run one, adjust the path flags to match the target host:
+
+- `--compose-dir /srv/compose/rackpatch-agent` for compose-mode agents
+- `--install-dir /opt/rackpatch-agent` for systemd or container-mode agents
+
 Agent packaging modes:
 
 - `compose`: installs under the configured agent compose directory and pulls `ghcr.io/.../rackpatch-agent:<tag>`
@@ -21,17 +26,47 @@ Compose and container agent updates pull the configured published tag by default
 
 ## Example install and update commands
 
+Example compose install:
+
+```bash
+AGENT_DIR=/srv/compose/rackpatch-agent
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/main/scripts/install-agent.sh" | bash -s -- \
+  --server-url http://YOUR-RACKPATCH-HOST:3011 \
+  --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
+  --mode compose \
+  --compose-dir "${AGENT_DIR}" \
+  --image ghcr.io/schmidtcode/rackpatch-agent:latest
+```
+
 Example container install:
 
 ```bash
 RELEASE_TAG=v0.4.0
 RELEASE_VERSION="${RELEASE_TAG#v}"
+AGENT_DIR=/opt/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/install-agent.sh" | bash -s -- \
   --server-url http://YOUR-RACKPATCH-HOST:3011 \
   --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
   --mode container \
+  --install-dir "${AGENT_DIR}" \
   --image "ghcr.io/schmidtcode/rackpatch-agent:${RELEASE_VERSION}"
+```
+
+Example systemd install:
+
+```bash
+RELEASE_TAG=v0.4.0
+AGENT_DIR=/opt/rackpatch-agent
+
+curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/install-agent.sh" | sudo bash -s -- \
+  --server-url http://YOUR-RACKPATCH-HOST:3011 \
+  --bootstrap-token YOUR_BOOTSTRAP_TOKEN \
+  --mode systemd \
+  --install-dir "${AGENT_DIR}" \
+  --install-source https://github.com/SchmidtCode/rackpatch.git \
+  --install-ref "${RELEASE_TAG}"
 ```
 
 Example stack update:
@@ -53,11 +88,12 @@ Example host-maintenance enablement for guest and Docker-host package actions:
 
 ```bash
 RELEASE_TAG=v0.4.0
+AGENT_DIR=/srv/compose/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
   --mode compose \
   --preset packages \
-  --compose-dir /srv/compose/rackpatch-agent \
+  --compose-dir "${AGENT_DIR}" \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
   --install-ref "${RELEASE_TAG}"
 ```
@@ -66,15 +102,29 @@ Example host-maintenance enablement for Proxmox nodes:
 
 ```bash
 RELEASE_TAG=v0.4.0
+AGENT_DIR=/opt/rackpatch-agent
 
 curl -fsSL "https://raw.githubusercontent.com/SchmidtCode/rackpatch/${RELEASE_TAG}/scripts/enable-agent-host-maintenance.sh" | sudo bash -s -- \
   --mode systemd \
   --preset proxmox \
+  --install-dir "${AGENT_DIR}" \
   --install-source https://github.com/SchmidtCode/rackpatch.git \
   --install-ref "${RELEASE_TAG}"
 ```
 
+If you intentionally run a compose-mode agent on a Proxmox or similarly locked-down Docker host and Unix sockets fail inside the container, add this to the install command:
+
+```bash
+--security-opt apparmor=unconfined
+```
+
+The helper enable script also force-recreates compose-mode agent containers after the helper service restart. That keeps `/run/rackpatch-host-helper` mounts aligned with the live runtime directory and prevents helper capability discovery from getting stuck on stale socket mounts.
+
 If you want a custom mix, pass `--allow-actions package_check,package_patch,proxmox_patch,proxmox_reboot` with only the actions you want that node to advertise.
+
+If you want one Proxmox node to advertise both package and Proxmox actions, use `--preset all` or the explicit alias `--preset packages+proxmox`.
+
+If you are running from a local checkout instead of `curl | bash`, `enable-agent-host-maintenance.sh` still requires root and should be invoked from a root shell or with `sudo bash ./scripts/enable-agent-host-maintenance.sh ...`.
 
 The helper exposes only approved host-maintenance actions. Package actions remain separate from Proxmox patch and reboot, and the agent advertises only the capabilities that are explicitly enabled on that node.
 

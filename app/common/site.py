@@ -34,6 +34,13 @@ def load_inventory() -> dict[str, Any]:
     return _load_yaml(inventory_path())
 
 
+def save_inventory(inventory: dict[str, Any]) -> None:
+    path = inventory_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(inventory, handle, sort_keys=False)
+
+
 def stacks_path() -> Path:
     return site_root() / "stacks.yml"
 
@@ -123,6 +130,111 @@ def load_hosts() -> list[dict[str, Any]]:
     for item in results:
         deduped[item["name"]] = item
     return list(deduped.values())
+
+
+def find_host(name: str) -> dict[str, Any] | None:
+    desired = str(name or "").strip()
+    if not desired:
+        return None
+    for item in load_hosts():
+        if str(item.get("name") or "").strip() == desired:
+            return item
+    return None
+
+
+def load_groups() -> list[str]:
+    inventory = load_inventory()
+    groups: list[str] = []
+
+    def walk(node: dict[str, Any], group_name: str) -> None:
+        if group_name not in groups:
+            groups.append(group_name)
+        for child_name, child_data in (node.get("children") or {}).items():
+            if isinstance(child_data, dict):
+                walk(child_data, child_name)
+
+    walk(inventory.get("all") or {}, "all")
+    return groups
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _ensure_inventory_root(inventory: dict[str, Any]) -> dict[str, Any]:
+    all_node = _as_mapping(inventory.get("all"))
+    inventory["all"] = all_node
+    return all_node
+
+
+def _find_group_node(node: dict[str, Any], group_name: str) -> dict[str, Any] | None:
+    for child_name, child_data in (_as_mapping(node.get("children"))).items():
+        if child_name == group_name and isinstance(child_data, dict):
+            return child_data
+        if isinstance(child_data, dict):
+            match = _find_group_node(child_data, group_name)
+            if match is not None:
+                return match
+    return None
+
+
+def _ensure_group_node(inventory: dict[str, Any], group_name: str) -> dict[str, Any]:
+    all_node = _ensure_inventory_root(inventory)
+    if group_name == "all":
+        return all_node
+    existing = _find_group_node(all_node, group_name)
+    if existing is not None:
+        return existing
+    children = _as_mapping(all_node.get("children"))
+    all_node["children"] = children
+    children[group_name] = {}
+    return children[group_name]
+
+
+def _remove_host_from_node(node: dict[str, Any], host_name: str) -> bool:
+    removed = False
+    hosts = _as_mapping(node.get("hosts"))
+    if host_name in hosts:
+        del hosts[host_name]
+        removed = True
+    if hosts:
+        node["hosts"] = hosts
+    elif "hosts" in node:
+        node.pop("hosts", None)
+    for child_data in _as_mapping(node.get("children")).values():
+        if isinstance(child_data, dict) and _remove_host_from_node(child_data, host_name):
+            removed = True
+    return removed
+
+
+def upsert_host(original_name: str, host_name: str, group_name: str, data: dict[str, Any]) -> dict[str, Any]:
+    inventory = load_inventory()
+    all_node = _ensure_inventory_root(inventory)
+    desired_name = str(host_name or "").strip()
+    desired_group = str(group_name or "").strip() or "all"
+    if not desired_name:
+        raise ValueError("host name is required")
+    if original_name and desired_name != original_name and find_host(desired_name) is not None:
+        raise ValueError(f"host {desired_name} already exists")
+    _remove_host_from_node(all_node, str(original_name or "").strip() or desired_name)
+    group_node = _ensure_group_node(inventory, desired_group)
+    hosts = _as_mapping(group_node.get("hosts"))
+    group_node["hosts"] = hosts
+    hosts[desired_name] = dict(data or {})
+    save_inventory(inventory)
+    updated = find_host(desired_name)
+    if updated is None:
+        raise ValueError(f"failed to write host {desired_name}")
+    return updated
+
+
+def delete_host(host_name: str) -> bool:
+    inventory = load_inventory()
+    all_node = _ensure_inventory_root(inventory)
+    removed = _remove_host_from_node(all_node, str(host_name or "").strip())
+    if removed:
+        save_inventory(inventory)
+    return removed
 
 
 def group_hosts(group_name: str) -> list[str]:

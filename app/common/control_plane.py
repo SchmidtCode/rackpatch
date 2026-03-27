@@ -20,6 +20,29 @@ def _normalize_dir(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _shell_join(parts: list[str]) -> str:
+    return " ".join(_shell_quote(part) if part != "|" else part for part in parts)
+
+
+def _command_with_variable(
+    *,
+    variable_name: str,
+    default_value: str,
+    before_flag: list[str],
+    flag_name: str,
+    after_flag: list[str] | None = None,
+    note: str = "",
+) -> str:
+    lines = [f"{variable_name}={_shell_quote(default_value)}"]
+    if note:
+        lines.extend(["", note])
+    command = f'{_shell_join(before_flag + [flag_name])} "${{{variable_name}}}"'
+    if after_flag:
+        command = f"{command} {_shell_join(after_flag)}"
+    lines.extend(["", command])
+    return "\n".join(lines)
+
+
 def _agent_image_for_ref(public_settings: dict[str, Any], repo_ref: str) -> str:
     return config.derive_public_image_ref(
         str(public_settings.get("repo_url") or config.PUBLIC_REPO_URL),
@@ -40,44 +63,61 @@ def build_agent_install_commands(public_settings: dict[str, Any], token: str) ->
         "--",
     ]
     image = _agent_image_for_ref(public_settings, repo_ref)
-    compose = script_prefix + [
+    compose_prefix = script_prefix + [
         "--server-url",
         public_settings["base_url"],
         "--bootstrap-token",
         token,
         "--mode",
         "compose",
-        "--compose-dir",
-        public_settings["agent_compose_dir"],
-        "--image",
-        image,
     ]
-    container = script_prefix + [
+    compose = _command_with_variable(
+        variable_name="AGENT_DIR",
+        default_value=str(public_settings["agent_compose_dir"]),
+        before_flag=compose_prefix,
+        flag_name="--compose-dir",
+        after_flag=["--image", image],
+        note="# If Docker blocks Unix sockets on this host, append: --security-opt apparmor=unconfined",
+    )
+    container_prefix = script_prefix + [
         "--server-url",
         public_settings["base_url"],
         "--bootstrap-token",
         token,
         "--mode",
         "container",
-        "--image",
-        image,
     ]
-    systemd = script_prefix + [
+    container = _command_with_variable(
+        variable_name="AGENT_DIR",
+        default_value="/opt/rackpatch-agent",
+        before_flag=container_prefix,
+        flag_name="--install-dir",
+        after_flag=["--image", image],
+    )
+    systemd_prefix = script_prefix + [
         "--server-url",
         public_settings["base_url"],
         "--bootstrap-token",
         token,
         "--mode",
         "systemd",
-        "--install-source",
-        public_settings["repo_url"],
-        "--install-ref",
-        repo_ref,
     ]
+    systemd = _command_with_variable(
+        variable_name="AGENT_DIR",
+        default_value="/opt/rackpatch-agent",
+        before_flag=systemd_prefix,
+        flag_name="--install-dir",
+        after_flag=[
+            "--install-source",
+            public_settings["repo_url"],
+            "--install-ref",
+            repo_ref,
+        ],
+    )
     return {
-        "compose": " ".join(_shell_quote(part) if part != "|" else part for part in compose),
-        "container": " ".join(_shell_quote(part) if part != "|" else part for part in container),
-        "systemd": " ".join(_shell_quote(part) if part != "|" else part for part in systemd),
+        "compose": compose,
+        "container": container,
+        "systemd": systemd,
     }
 
 
@@ -97,11 +137,32 @@ def build_agent_host_maintenance_command(
     )
     if "example.invalid" in script_url:
         return "# Configure a GitHub repo URL to generate rackpatch host-maintenance enable commands."
-    extra: list[str] = []
+    note = "# For Proxmox nodes, replace --preset packages with --preset all or --preset proxmox."
     if mode == "compose":
-        extra = ["--compose-dir", compose_dir or public_settings["agent_compose_dir"]]
-    elif mode in {"container", "systemd"}:
-        extra = ["--install-dir", install_dir or "/opt/rackpatch-agent"]
+        return _command_with_variable(
+            variable_name="AGENT_DIR",
+            default_value=compose_dir or str(public_settings["agent_compose_dir"]),
+            before_flag=[
+                "curl",
+                "-fsSL",
+                script_url,
+                "|",
+                "sudo",
+                "bash",
+                "-s",
+                "--",
+                "--mode",
+                mode,
+                "--preset",
+                preset,
+                "--install-source",
+                public_settings["repo_url"],
+                "--install-ref",
+                ref,
+            ],
+            flag_name="--compose-dir",
+            note=note,
+        )
     command = [
         "curl",
         "-fsSL",
@@ -119,9 +180,14 @@ def build_agent_host_maintenance_command(
         public_settings["repo_url"],
         "--install-ref",
         ref,
-        *extra,
     ]
-    return " ".join(_shell_quote(part) if part != "|" else part for part in command)
+    return _command_with_variable(
+        variable_name="AGENT_DIR",
+        default_value=install_dir or "/opt/rackpatch-agent",
+        before_flag=command,
+        flag_name="--install-dir",
+        note=note,
+    )
 
 
 def build_agent_host_maintenance_commands(public_settings: dict[str, Any], ref: str) -> dict[str, str]:
@@ -369,6 +435,7 @@ def build_api_surface(public_settings: dict[str, Any]) -> dict[str, Any]:
         "stacks": "/api/v1/stacks",
         "docker_updates": "/api/v1/docker/updates",
         "hosts": "/api/v1/hosts",
+        "host_update_template": "/api/v1/hosts/{host_name}",
         "agents": "/api/v1/agents",
         "schedules": "/api/v1/schedules",
         "backups": "/api/v1/backups",
@@ -396,6 +463,35 @@ def build_api_surface(public_settings: dict[str, Any]) -> dict[str, Any]:
             ),
             "jobs": _curl_command(
                 f"{base_url}{resources['jobs']}",
+                "-H",
+                "Authorization: Bearer REPLACE_ME",
+            ),
+            "hosts_create": _curl_command(
+                f"{base_url}{resources['hosts']}",
+                "-X",
+                "POST",
+                "-H",
+                "Authorization: Bearer REPLACE_ME",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                '{"name":"apps-vm","group":"docker_hosts","ansible_host":"192.168.10.20","ansible_user":"root","compose_root":"/srv/compose"}',
+            ),
+            "hosts_update": _curl_command(
+                f"{base_url}{resources['host_update_template']}".replace("{host_name}", "apps-vm"),
+                "-X",
+                "PUT",
+                "-H",
+                "Authorization: Bearer REPLACE_ME",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                '{"group":"docker_hosts","maintenance_tier":"apps"}',
+            ),
+            "hosts_delete": _curl_command(
+                f"{base_url}{resources['host_update_template']}".replace("{host_name}", "apps-vm"),
+                "-X",
+                "DELETE",
                 "-H",
                 "Authorization: Bearer REPLACE_ME",
             ),
