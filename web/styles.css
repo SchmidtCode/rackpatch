@@ -406,6 +406,49 @@ button.danger {
   display: block;
 }
 
+.compact-table th,
+.compact-table td {
+  padding: 8px 10px;
+}
+
+.compact-table td {
+  font-size: 0.9rem;
+}
+
+.history-table {
+  min-width: 1320px;
+  table-layout: fixed;
+}
+
+.history-filter-row th {
+  padding: 8px 10px 10px;
+  background: rgba(10, 20, 24, 0.96);
+}
+
+.history-filter-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  background: rgba(6, 16, 19, 0.9);
+}
+
+.history-cell {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.table-clip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .stack-update-table td:first-child,
 .stack-update-table th:first-child {
   width: 56px;

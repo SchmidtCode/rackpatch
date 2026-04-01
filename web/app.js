@@ -1,6 +1,6 @@
 import { createApiClient } from "./api.js";
 import { createDelegatedHandler, debounce, withAsyncAction } from "./events.js";
-import { createState, EMPTY_DOCKER_UPDATES, normalizeSelection, PAGE_META } from "./store.js";
+import { createState, EMPTY_DOCKER_HISTORY, EMPTY_DOCKER_UPDATES, normalizeSelection, PAGE_META } from "./store.js";
 
 const state = createState();
 const sessionState = state.session;
@@ -44,6 +44,8 @@ const jobManualTargetLabel = document.getElementById("job-manual-target-label");
 const jobManualTargetInput = document.getElementById("job-manual-target");
 const jobOptions = document.getElementById("job-options");
 const stacksSummary = document.getElementById("stacks-summary");
+const historySummary = document.getElementById("history-summary");
+const historyTable = document.getElementById("history-table");
 const overviewRelease = document.getElementById("overview-release");
 const automationApi = document.getElementById("automation-api");
 const automationLive = document.getElementById("automation-live");
@@ -66,6 +68,19 @@ const FALLBACK_JOB_KIND = {
   default_select_all: true,
   fields: [],
 };
+
+const DOCKER_HISTORY_COLUMNS = [
+  { key: "updated_at", label: "Updated", placeholder: "date or time" },
+  { key: "stack", label: "Stack", placeholder: "stack name" },
+  { key: "component", label: "Component", placeholder: "service" },
+  { key: "host", label: "Host", placeholder: "host" },
+  { key: "image", label: "Image", placeholder: "image ref" },
+  { key: "from_version", label: "From", placeholder: "old digest or ref" },
+  { key: "to_version", label: "To", placeholder: "new digest or ref" },
+  { key: "mode", label: "How", placeholder: "manual or automation" },
+  { key: "source", label: "Source", placeholder: "schedule or ui" },
+  { key: "requested_by", label: "By", placeholder: "requester" },
+];
 
 function applyAppVersion(version = {}) {
   const appName = String(version.app_name || "rackpatch").trim() || "rackpatch";
@@ -190,6 +205,54 @@ function releaseLabel(value) {
 
 function pluralize(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function historyFilterValue(key) {
+  return uiState.dockerHistoryFilters?.[key] || "";
+}
+
+function normalizeHistoryFilterValue(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function historySearchValue(item, key) {
+  switch (key) {
+    case "updated_at":
+      return [formatTimestamp(item.updated_at), item.updated_at].filter(Boolean).join(" ");
+    case "from_version":
+      return [item.from_version, item.from_short, item.from_ref].filter(Boolean).join(" ");
+    case "to_version":
+      return [item.to_version, item.to_short, item.to_ref].filter(Boolean).join(" ");
+    default:
+      return String(item[key] ?? "");
+  }
+}
+
+function filteredDockerHistoryItems() {
+  const payload = entitiesState.dockerHistory || EMPTY_DOCKER_HISTORY;
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  return items.filter((item) =>
+    DOCKER_HISTORY_COLUMNS.every((column) => {
+      const filterValue = normalizeHistoryFilterValue(historyFilterValue(column.key));
+      if (!filterValue) {
+        return true;
+      }
+      return normalizeHistoryFilterValue(historySearchValue(item, column.key)).includes(filterValue);
+    })
+  );
+}
+
+function historyStacksCount(items) {
+  return new Set(items.map((item) => item.stack).filter(Boolean)).size;
+}
+
+function historyComponentsCount(items) {
+  return new Set(items.map((item) => `${item.stack}::${item.component}`).filter((value) => !value.endsWith("::"))).size;
+}
+
+function historyDisplayValue(value, fallback = "n/a") {
+  const text = String(value || "").trim();
+  return text || fallback;
 }
 
 function getDockerUpdateItems() {
@@ -374,19 +437,29 @@ function showFlash(message, type = "success") {
   }, 3500);
 }
 
-function syncPageFromHash() {
+async function syncPageFromHash() {
   const page = window.location.hash.replace(/^#/, "") || "overview";
   uiState.currentPage = PAGE_META[page] ? page : "overview";
   applyPageState();
+  if (uiState.currentPage === "history") {
+    await loadDockerHistory();
+  }
 }
 
-function setPage(page) {
+async function setPage(page) {
   if (!PAGE_META[page]) {
     return;
   }
   uiState.currentPage = page;
-  window.location.hash = page;
   applyPageState();
+  const expectedHash = `#${page}`;
+  if ((window.location.hash || "#overview") !== expectedHash) {
+    window.location.hash = page;
+    return;
+  }
+  if (page === "history") {
+    await loadDockerHistory();
+  }
 }
 
 function applyPageState() {
@@ -1394,6 +1467,184 @@ function renderStacks() {
   `;
 }
 
+function renderDockerHistorySummary(filteredItems = filteredDockerHistoryItems()) {
+  if (!historySummary) {
+    return;
+  }
+  const payload = entitiesState.dockerHistory || EMPTY_DOCKER_HISTORY;
+  const summary = payload.summary || EMPTY_DOCKER_HISTORY.summary;
+  const totalRows = Number(summary.total_rows || 0);
+  const hasFilters = DOCKER_HISTORY_COLUMNS.some((column) => historyFilterValue(column.key).trim());
+  const manualRows = filteredItems.filter((item) => item.mode === "Manual").length;
+  const automationRows = filteredItems.filter((item) => item.mode === "Automation").length;
+  const lastUpdatedAt = summary.last_updated_at ? formatTimestamp(summary.last_updated_at) : "No completed live updates yet";
+
+  historySummary.innerHTML = `
+    <div class="stack-toolbar">
+      <div class="stack-summary-grid">
+        <div class="stack-summary-card">
+          <span class="stat-label">Rows</span>
+          <strong>${pluralize(filteredItems.length, "row")}${hasFilters ? ` shown of ${totalRows}` : ""}</strong>
+          <span class="subline">${pluralize(historyStacksCount(filteredItems), "stack")} across the filtered view</span>
+        </div>
+        <div class="stack-summary-card">
+          <span class="stat-label">Components</span>
+          <strong>${pluralize(historyComponentsCount(filteredItems), "component")}</strong>
+          <span class="subline">${pluralize(Number(summary.total_jobs || 0), "job")} with recorded component changes</span>
+        </div>
+        <div class="stack-summary-card">
+          <span class="stat-label">How</span>
+          <strong>${pluralize(manualRows, "manual row")}</strong>
+          <span class="subline">${pluralize(automationRows, "automation row")}</span>
+        </div>
+        <div class="stack-summary-card">
+          <span class="stat-label">Last Update</span>
+          <strong>${escapeHtml(lastUpdatedAt)}</strong>
+          <span class="subline">${hasFilters ? "Filters are applied to the table below." : "Showing the full recorded history."}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDockerHistoryRow(item) {
+  const imageDisplay =
+    item.from_ref && item.to_ref && item.from_ref !== item.to_ref
+      ? `${item.from_ref} -> ${item.to_ref}`
+      : item.to_ref || item.from_ref || item.image || "n/a";
+  const fromTitle = [item.from_ref, item.from_short].filter(Boolean).join(" | ") || historyDisplayValue(item.from_version);
+  const toTitle = [item.to_ref, item.to_short].filter(Boolean).join(" | ") || historyDisplayValue(item.to_version);
+  const modeFlavor = item.mode === "Automation" ? "accent" : "good";
+
+  return `
+    <tr>
+      <td><span class="history-cell">${escapeHtml(formatTimestamp(item.updated_at))}</span></td>
+      <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.stack))}">${escapeHtml(historyDisplayValue(item.stack))}</span></td>
+      <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.component))}">${escapeHtml(historyDisplayValue(item.component))}</span></td>
+      <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.host))}">${escapeHtml(historyDisplayValue(item.host))}</span></td>
+      <td><span class="history-cell mono table-clip" title="${escapeHtml(imageDisplay)}">${escapeHtml(imageDisplay)}</span></td>
+      <td><span class="history-cell mono table-clip" title="${escapeHtml(fromTitle)}">${escapeHtml(historyDisplayValue(item.from_version))}</span></td>
+      <td><span class="history-cell mono table-clip" title="${escapeHtml(toTitle)}">${escapeHtml(historyDisplayValue(item.to_version))}</span></td>
+      <td>${badge(item.mode || "Manual", modeFlavor)}</td>
+      <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.source))}">${escapeHtml(historyDisplayValue(item.source))}</span></td>
+      <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.requested_by))}">${escapeHtml(historyDisplayValue(item.requested_by))}</span></td>
+    </tr>
+  `;
+}
+
+function renderDockerHistoryRows() {
+  if (!historyTable) {
+    return;
+  }
+  const body = historyTable.querySelector("#history-table-body");
+  if (!body) {
+    return;
+  }
+  const filteredItems = filteredDockerHistoryItems();
+  renderDockerHistorySummary(filteredItems);
+  if (!filteredItems.length) {
+    body.innerHTML = `
+      <tr>
+        <td colspan="${DOCKER_HISTORY_COLUMNS.length}">
+          <div class="empty">No history rows match the current filters.</div>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+  body.innerHTML = filteredItems.map((item) => renderDockerHistoryRow(item)).join("");
+}
+
+function renderDockerHistory() {
+  if (!historySummary || !historyTable) {
+    return;
+  }
+  const payload = entitiesState.dockerHistory || EMPTY_DOCKER_HISTORY;
+  const items = Array.isArray(payload.items) ? payload.items : [];
+
+  if (!payload.loaded && !payload.error && !items.length) {
+    renderDockerHistorySummary([]);
+    historyTable.innerHTML = emptyState("Loading update history...");
+    return;
+  }
+
+  if (payload.error) {
+    historySummary.innerHTML = `
+      <div class="stack-toolbar">
+        <div class="error">Update history is temporarily unavailable: ${escapeHtml(payload.error)}</div>
+      </div>
+    `;
+    historyTable.innerHTML = emptyState("Update history could not be loaded.");
+    return;
+  }
+
+  if (!items.length) {
+    renderDockerHistorySummary([]);
+    historyTable.innerHTML = emptyState("No completed live Docker update history has been recorded yet.");
+    return;
+  }
+
+  historyTable.innerHTML = `
+    <table class="data-table history-table compact-table">
+      <thead>
+        <tr>
+          ${DOCKER_HISTORY_COLUMNS.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}
+        </tr>
+        <tr class="history-filter-row">
+          ${DOCKER_HISTORY_COLUMNS.map(
+            (column) => `
+              <th>
+                <input
+                  type="text"
+                  class="history-filter-input"
+                  data-history-filter="${escapeHtml(column.key)}"
+                  value="${escapeHtml(historyFilterValue(column.key))}"
+                  placeholder="${escapeHtml(column.placeholder)}"
+                  aria-label="Filter ${escapeHtml(column.label)}"
+                />
+              </th>
+            `
+          ).join("")}
+        </tr>
+      </thead>
+      <tbody id="history-table-body"></tbody>
+    </table>
+  `;
+  renderDockerHistoryRows();
+}
+
+async function loadDockerHistory(force = false) {
+  const current = entitiesState.dockerHistory || EMPTY_DOCKER_HISTORY;
+  if (!force && current.loaded && !current.error) {
+    renderDockerHistory();
+    return current;
+  }
+
+  entitiesState.dockerHistory = {
+    ...EMPTY_DOCKER_HISTORY,
+    items: current.items || [],
+  };
+  renderDockerHistory();
+
+  try {
+    const payload = await api("/api/v1/docker/history");
+    entitiesState.dockerHistory = {
+      ...EMPTY_DOCKER_HISTORY,
+      ...payload,
+      loaded: true,
+      error: "",
+    };
+  } catch (error) {
+    entitiesState.dockerHistory = {
+      ...EMPTY_DOCKER_HISTORY,
+      loaded: true,
+      error: error.message,
+    };
+  }
+  renderDockerHistory();
+  return entitiesState.dockerHistory;
+}
+
 function renderHosts() {
   const items = entitiesState.hosts.items;
   renderTable(
@@ -1964,6 +2215,7 @@ function renderSettings() {
 function renderAll() {
   renderOverview();
   renderStacks();
+  renderDockerHistory();
   renderHosts();
   renderAgents();
   populateJobKindSelect();
@@ -2011,6 +2263,9 @@ async function loadDashboard() {
 
 async function refreshDashboard() {
   await loadDashboard();
+  if (uiState.currentPage === "history" || entitiesState.dockerHistory.loaded) {
+    await loadDockerHistory(true);
+  }
   if (uiState.selectedJob) {
     try {
       await selectJob(uiState.selectedJob, true);
@@ -2027,7 +2282,7 @@ async function selectJob(jobId, silent = false) {
   jobResult.innerHTML = resultMarkup;
   jobEvents.textContent = events.items.map((item) => `[${item.ts}] ${item.message}`).join("\n") || "No events yet.";
   if (!silent && uiState.currentPage !== "jobs") {
-    setPage("jobs");
+    await setPage("jobs");
   }
 }
 
@@ -2383,7 +2638,7 @@ loginForm.addEventListener("submit", async (event) => {
     localStorage.setItem("ops_token", sessionState.token);
     loginScreen.classList.add("hidden");
     appScreen.classList.remove("hidden");
-    syncPageFromHash();
+    await syncPageFromHash();
     await refreshDashboard();
   } catch (error) {
     loginError.textContent =
@@ -2610,6 +2865,19 @@ hostForm.addEventListener("submit", async (event) => {
 hostFormResetButton.addEventListener("click", () => {
   populateHostEditor();
   syncHostEditorOptions();
+});
+
+const rerenderDockerHistoryRows = debounce(() => {
+  renderDockerHistoryRows();
+}, 70);
+
+appScreen.addEventListener("input", (event) => {
+  const historyFilter = event.target.closest("[data-history-filter]");
+  if (!historyFilter) {
+    return;
+  }
+  uiState.dockerHistoryFilters[historyFilter.dataset.historyFilter] = historyFilter.value;
+  rerenderDockerHistoryRows();
 });
 
 appScreen.addEventListener("change", (event) => {
@@ -2874,13 +3142,17 @@ appScreen.addEventListener("click", async (event) => {
   });
 });
 
-window.addEventListener("hashchange", syncPageFromHash);
+window.addEventListener("hashchange", () => {
+  syncPageFromHash().catch((error) => {
+    showFlash(error.message, "error");
+  });
+});
 
 async function bootstrap() {
   populateHostEditor();
   syncHostEditorOptions();
   await loadAppVersion();
-  syncPageFromHash();
+  await syncPageFromHash();
 
   if (sessionState.token) {
     loginScreen.classList.add("hidden");

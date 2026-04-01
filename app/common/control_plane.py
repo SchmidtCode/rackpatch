@@ -434,6 +434,7 @@ def build_api_surface(public_settings: dict[str, Any]) -> dict[str, Any]:
         "job_events_template": "/api/v1/jobs/{job_id}/events",
         "stacks": "/api/v1/stacks",
         "docker_updates": "/api/v1/docker/updates",
+        "docker_history": "/api/v1/docker/history",
         "hosts": "/api/v1/hosts",
         "host_update_template": "/api/v1/hosts/{host_name}",
         "agents": "/api/v1/agents",

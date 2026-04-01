@@ -569,6 +569,135 @@ def _docker_updates_payload() -> dict[str, Any]:
     }
 
 
+def _history_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _docker_history_mode(source: Any, requested_by: Any) -> str:
+    normalized_source = str(source or "").strip().lower()
+    requester = str(requested_by or "").strip().lower()
+    if normalized_source == "schedule" or requester == "system":
+        return "Automation"
+    return "Manual"
+
+
+def _docker_history_source_label(source: Any, requested_by: Any) -> str:
+    normalized_source = str(source or "").strip().lower()
+    requester = str(requested_by or "").strip().lower()
+    if normalized_source == "ui":
+        return "Control Plane"
+    if normalized_source == "schedule":
+        return "Schedule"
+    if normalized_source == "telegram":
+        return "Telegram"
+    if normalized_source:
+        return normalized_source.replace("_", " ").title()
+    if requester == "system":
+        return "System"
+    return "Unknown"
+
+
+def _docker_history_rows(job_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for job in job_rows:
+        payload = _json_body(job.get("payload"))
+        if _history_bool(payload.get("dry_run")):
+            continue
+
+        result = _json_body(job.get("result"))
+        update_summary = _json_body(result.get("update_summary"))
+        raw_stacks = update_summary.get("stacks")
+        stack_summaries = raw_stacks if isinstance(raw_stacks, list) else []
+        if not stack_summaries and isinstance(update_summary.get("services"), list):
+            stack_summaries = [
+                {
+                    "stack": str(job.get("target_ref") or ""),
+                    "host": str(payload.get("host") or ""),
+                    "services": update_summary.get("services"),
+                }
+            ]
+
+        updated_at = job.get("finished_at") or job.get("started_at") or job.get("created_at")
+        mode = _docker_history_mode(job.get("source"), job.get("requested_by"))
+        source_label = _docker_history_source_label(job.get("source"), job.get("requested_by"))
+
+        for stack_summary in stack_summaries:
+            if not isinstance(stack_summary, dict):
+                continue
+            services = stack_summary.get("services")
+            if not isinstance(services, list):
+                continue
+            stack_name = str(stack_summary.get("stack") or job.get("target_ref") or "").strip()
+            host = str(stack_summary.get("host") or payload.get("host") or "").strip()
+            for service_index, service in enumerate(services, start=1):
+                if not isinstance(service, dict):
+                    continue
+                component = str(service.get("service") or "").strip()
+                from_ref = str(service.get("from_ref") or "").strip()
+                to_ref = str(service.get("to_ref") or "").strip()
+                from_short = str(service.get("from_short") or "").strip()
+                to_short = str(service.get("to_short") or "").strip()
+                image = to_ref or from_ref or to_short or from_short
+                if not any([stack_name, component, image]):
+                    continue
+                component_key = component or f"service-{service_index}"
+                items.append(
+                    {
+                        "id": f"{job['id']}:{stack_name}:{component_key}",
+                        "job_id": str(job.get("id") or ""),
+                        "stack": stack_name,
+                        "host": host,
+                        "component": component,
+                        "image": image,
+                        "from_ref": from_ref,
+                        "to_ref": to_ref,
+                        "from_version": from_short or from_ref,
+                        "to_version": to_short or to_ref,
+                        "from_short": from_short,
+                        "to_short": to_short,
+                        "updated_at": updated_at,
+                        "mode": mode,
+                        "source": source_label,
+                        "requested_by": str(job.get("requested_by") or ""),
+                        "executor": str(job.get("executor") or ""),
+                        "approval_status": str(job.get("approval_status") or ""),
+                    }
+                )
+    return items
+
+
+def _docker_history_payload() -> dict[str, Any]:
+    job_rows = db.fetch_all(
+        """
+        SELECT id, source, target_ref, executor, payload, result, requested_by,
+               approval_status, created_at, started_at, finished_at
+        FROM jobs
+        WHERE kind = 'docker_update'
+          AND status = 'completed'
+          AND target_type = 'stack'
+        ORDER BY COALESCE(finished_at, started_at, created_at) DESC, created_at DESC
+        """
+    )
+    items = _docker_history_rows(job_rows)
+    summary = {
+        "total_rows": len(items),
+        "total_jobs": len({item["job_id"] for item in items}),
+        "total_stacks": len({item["stack"] for item in items if item["stack"]}),
+        "total_components": len({f"{item['stack']}::{item['component']}" for item in items if item["component"]}),
+        "manual_rows": sum(1 for item in items if item["mode"] == "Manual"),
+        "automation_rows": sum(1 for item in items if item["mode"] == "Automation"),
+        "last_updated_at": items[0]["updated_at"] if items else None,
+    }
+    return {
+        "summary": summary,
+        "items": items,
+        "loaded": True,
+        "error": "",
+    }
+
+
 def _settings_payload() -> dict[str, Any]:
     bootstrap_token = auth.ensure_bootstrap_token()
     public_settings = runtime_settings.get_public_settings()
@@ -683,6 +812,12 @@ def stacks(username: str = Depends(auth.require_user)) -> dict[str, Any]:
 def docker_updates(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
     return _docker_updates_payload()
+
+
+@app.get("/api/v1/docker/history")
+def docker_history(username: str = Depends(auth.require_user)) -> dict[str, Any]:
+    del username
+    return _docker_history_payload()
 
 
 @app.get("/api/v1/hosts")

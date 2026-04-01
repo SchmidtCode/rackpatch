@@ -61,6 +61,14 @@ class _FastAPIStub:
 
         return decorator
 
+    def put(self, *args, **kwargs):
+        del args, kwargs
+
+        def decorator(func):
+            return func
+
+        return decorator
+
     def delete(self, *args, **kwargs):
         del args, kwargs
 
@@ -81,7 +89,7 @@ def _header(*args, **kwargs):
 
 fastapi_stub.Depends = getattr(fastapi_stub, "Depends", _depends)
 fastapi_class = getattr(fastapi_stub, "FastAPI", _FastAPIStub)
-for method_name in ("add_middleware", "on_event", "get", "post", "delete"):
+for method_name in ("add_middleware", "on_event", "get", "post", "put", "delete"):
     if not hasattr(fastapi_class, method_name):
         setattr(fastapi_class, method_name, getattr(_FastAPIStub, method_name))
 fastapi_stub.FastAPI = fastapi_class

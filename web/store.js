@@ -1,6 +1,7 @@
 export const PAGE_META = {
   overview: { kicker: "Control Plane", title: "Overview" },
   stacks: { kicker: "Compose", title: "Stacks" },
+  history: { kicker: "Version Log", title: "Update History" },
   hosts: { kicker: "Inventory", title: "Hosts" },
   agents: { kicker: "Polling Agents", title: "Agents" },
   jobs: { kicker: "Execution", title: "Jobs" },
@@ -26,6 +27,21 @@ export const EMPTY_DOCKER_UPDATES = {
   items: [],
 };
 
+export const EMPTY_DOCKER_HISTORY = {
+  summary: {
+    total_rows: 0,
+    total_jobs: 0,
+    total_stacks: 0,
+    total_components: 0,
+    manual_rows: 0,
+    automation_rows: 0,
+    last_updated_at: null,
+  },
+  items: [],
+  loaded: false,
+  error: "",
+};
+
 export function createState() {
   return {
     session: {
@@ -38,6 +54,18 @@ export function createState() {
       jobLogExpanded: false,
       expandedStacks: {},
       stackUpdateRequiresApproval: true,
+      dockerHistoryFilters: {
+        updated_at: "",
+        stack: "",
+        component: "",
+        host: "",
+        image: "",
+        from_version: "",
+        to_version: "",
+        mode: "",
+        source: "",
+        requested_by: "",
+      },
       flashTimer: null,
     },
     jobForm: {
@@ -58,6 +86,7 @@ export function createState() {
       hosts: { items: [] },
       stacks: { items: [] },
       dockerUpdates: { ...EMPTY_DOCKER_UPDATES },
+      dockerHistory: { ...EMPTY_DOCKER_HISTORY },
       jobs: { items: [] },
       schedules: { items: [] },
       backups: { items: [] },
