@@ -47,6 +47,7 @@ const stacksSummary = document.getElementById("stacks-summary");
 const historySummary = document.getElementById("history-summary");
 const historyTable = document.getElementById("history-table");
 const overviewRelease = document.getElementById("overview-release");
+const overviewDockerPendingSummary = document.getElementById("overview-docker-pending-summary");
 const automationApi = document.getElementById("automation-api");
 const automationLive = document.getElementById("automation-live");
 const releaseStatus = document.getElementById("release-status");
@@ -142,6 +143,17 @@ function formatTimestamp(value) {
     return "n/a";
   }
   return new Date(value).toLocaleString();
+}
+
+function formatTimestampParts(value) {
+  if (!value) {
+    return { date: "n/a", time: "" };
+  }
+  const dateValue = new Date(value);
+  return {
+    date: dateValue.toLocaleDateString(),
+    time: dateValue.toLocaleTimeString(),
+  };
 }
 
 function formatBytes(value) {
@@ -384,14 +396,20 @@ function renderInspectionServices(report) {
       ${services
         .map((service) => {
           const ref = escapeHtml(service.ref || "n/a");
+          const targetRef = service.target_ref && service.target_ref !== service.ref
+            ? `<span class="subline mono">Target ${escapeHtml(service.target_ref)}</span>`
+            : "";
           const local = escapeHtml(service.local_short || "unknown");
           const remote = escapeHtml(service.remote_short || "unknown");
+          const reason = service.update_reason ? `<span class="subline">${escapeHtml(service.update_reason)}</span>` : "";
           const error = service.error ? `<span class="subline">${escapeHtml(service.error)}</span>` : "";
           return `
             <div class="stack-detail-row">
               <div>
                 <strong>${escapeHtml(service.service || "unknown")}</strong>
                 <span class="subline mono">${ref}</span>
+                ${targetRef}
+                ${reason}
                 ${error}
               </div>
               <div>${statusBadge(inspectionStateLabel(service.status || "unknown"))}</div>
@@ -493,6 +511,26 @@ function setCheckboxValue(id, checked) {
     return;
   }
   element.checked = Boolean(checked);
+}
+
+function renderDockerPolicyHelp(dockerUpdates = {}) {
+  const strategy = String(dockerUpdates.version_strategy || "stable");
+  const semverPolicy = String(dockerUpdates.semver_policy || "patch");
+  const lines = [];
+
+  if (strategy === "latest") {
+    lines.push("Latest follows a mutable tag and is best suited to labs or fast-moving dev stacks.");
+  } else if (strategy === "previous_stable") {
+    lines.push("Previous stable intentionally lags one release behind the newest stable tag.");
+  } else {
+    lines.push("Stable follows the newest stable semver tag and skips prereleases unless you opt in.");
+  }
+
+  lines.push(`Semver policy: ${semverPolicy}.`);
+  lines.push(dockerUpdates.allow_major_upgrades ? "Major upgrades are allowed automatically." : "Major upgrades stay blocked by default.");
+  lines.push(dockerUpdates.resolve_to_digest ? "Selected tags are pinned to immutable digests before deploy." : "Selected tags stay tag-based after resolution.");
+
+  return lines.join("\n");
 }
 
 function currentHostEditorName() {
@@ -1186,6 +1224,9 @@ function renderOverview() {
   const overview = entitiesState.overview;
   const jobs = entitiesState.jobs.items;
   const approvals = jobs.filter((item) => item.approval_status === "pending");
+  const pendingDocker = overview.pending_docker_updates || { summary: {}, items: [] };
+  const pendingDockerItems = Array.isArray(pendingDocker.items) ? pendingDocker.items : [];
+  const pendingDockerSummary = pendingDocker.summary || {};
   const release = entitiesState.settings.release || {};
 
   const stats = [
@@ -1195,6 +1236,7 @@ function renderOverview() {
     ["Jobs", overview.counts.jobs],
     ["Running", overview.counts.running_jobs],
     ["Approvals", overview.counts.pending_approvals],
+    ["Docker Pending", overview.counts.pending_docker_jobs || 0],
   ];
   document.getElementById("overview-stats").innerHTML = stats
     .map(
@@ -1257,6 +1299,76 @@ function renderOverview() {
     ),
     "No pending approvals."
   );
+
+  if (overviewDockerPendingSummary) {
+    overviewDockerPendingSummary.textContent = pendingDockerItems.length
+      ? [
+          `${pluralize(Number(pendingDockerSummary.total_jobs || 0), "pending Docker approval job")}`,
+          `${pluralize(Number(pendingDockerSummary.total_rows || 0), "service preview row")}`,
+          pendingDockerSummary.last_checked_at ? `Latest preview check: ${formatTimestamp(pendingDockerSummary.last_checked_at)}` : "No completed Docker check is linked yet.",
+          pendingDockerSummary.last_requested_at ? `Latest approval request: ${formatTimestamp(pendingDockerSummary.last_requested_at)}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "No pending Docker update approvals.";
+  }
+
+  renderTable(
+    "overview-docker-pending",
+    ["Stack", "Component", "From", "To", "Freshness", "Action"],
+    pendingDockerItems.slice(0, 10).map((item) => {
+      const stackBits = [
+        item.host ? `${item.host}` : "",
+        item.requested_by ? `requested by ${item.requested_by}` : "",
+        item.job_id ? `job ${shortId(item.job_id)}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const componentLabel = item.component || "Preview unavailable";
+      const componentReason = item.reason
+        ? `<span class="subline">${escapeHtml(item.reason)}</span>`
+        : "";
+      const fromLabel = item.from_version || "n/a";
+      const toLabel = item.to_version || "n/a";
+      const fromRef = item.from_ref && item.from_ref !== item.from_version
+        ? `<span class="subline mono">${escapeHtml(item.from_ref)}</span>`
+        : "";
+      const toRef = item.to_ref && item.to_ref !== item.to_version
+        ? `<span class="subline mono">${escapeHtml(item.to_ref)}</span>`
+        : "";
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(item.stack || "unknown")}</strong>
+            ${stackBits ? `<span class="subline">${escapeHtml(stackBits)}</span>` : ""}
+          </td>
+          <td>
+            <strong>${escapeHtml(componentLabel)}</strong>
+            ${componentReason}
+          </td>
+          <td>
+            <strong>${escapeHtml(fromLabel)}</strong>
+            ${fromRef}
+          </td>
+          <td>
+            <strong>${escapeHtml(toLabel)}</strong>
+            ${toRef}
+          </td>
+          <td>
+            <span class="subline">${escapeHtml(item.checked_at ? `Checked ${formatTimestamp(item.checked_at)}` : "No completed check yet")}</span>
+            <span class="subline">${escapeHtml(item.requested_at ? `Requested ${formatTimestamp(item.requested_at)}` : "Request time unavailable")}</span>
+          </td>
+          <td>
+            <div class="table-actions">
+              <button data-job-approve="${escapeHtml(item.job_id)}">Approve</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }),
+    "No pending Docker update approvals."
+  );
+
   if (overviewRelease) {
     const latest = release.latest || {};
     const stack = release.stack || {};
@@ -1361,7 +1473,16 @@ function renderStacks() {
             const inspectionState = inspectionStateLabel(inspection.state || "unknown");
             const updateStatus = latestUpdate.status ? String(latestUpdate.status).replaceAll("_", " ") : "never run";
             const changedServices = Number((latestUpdate.summary || {}).changed_services || 0);
+            const strategyLabel = item.image_strategy === "env-ref"
+              ? item.catalog_source === "discovered"
+                ? "env-ref auto"
+                : "env-ref"
+              : "compose-default";
             const policyBits = [
+              strategyLabel,
+              dockerUpdateSettings.version_strategy ? `strategy:${dockerUpdateSettings.version_strategy}` : "",
+              dockerUpdateSettings.semver_policy ? `semver:${dockerUpdateSettings.semver_policy}` : "",
+              dockerUpdateSettings.resolve_to_digest === false ? "digest-off" : "digest-on",
               item.backup_before ? "backup_before" : "",
               item.backup_before && backupCommandCount
                 ? dockerUpdateSettings.run_backup_commands
@@ -1374,6 +1495,9 @@ function renderStacks() {
               : liveAccess.reason || checkAccess.reason || "Inspection unavailable.";
             const accessSecondary =
               !dryAccess.eligible && dryAccess.reason && dryAccess.reason !== accessPrimary ? dryAccess.reason : "";
+            const strategyHint = item.image_strategy === "env-ref"
+              ? "Stable policy can rewrite env-backed image refs for this stack."
+              : "This stack is using compose-default refs, so stable-tag migration still needs a manual image pin.";
             const detailsExpanded = Boolean(uiState.expandedStacks[item.name]);
             const detailReport = report && Object.keys(report).length ? renderInspectionServices(report) : emptyState("Run a check to load image-by-image details.");
             const detailSummary = changedServices
@@ -1381,6 +1505,11 @@ function renderStacks() {
               : latestUpdate.error
                 ? `<span class="subline error">${escapeHtml(latestUpdate.error)}</span>`
                 : `<span class="subline">${escapeHtml(latestUpdate.finished_at ? `Last update finished ${formatTimestamp(latestUpdate.finished_at)}.` : "No completed live update recorded yet.")}</span>`;
+            const inspectionTimestampLabel = inspection.checked_at
+              ? inspection.derived_from_update
+                ? `Marked current ${formatTimestamp(inspection.checked_at)}`
+                : formatTimestamp(inspection.checked_at)
+              : "Not checked yet";
             return `
               <tr>
                 <td>
@@ -1406,7 +1535,7 @@ function renderStacks() {
                   <span class="subline">
                     ${report.outdated_count ? `${report.outdated_count}/${report.image_count || 0} outdated` : report.image_count ? `${report.image_count} tracked image(s)` : "No inspection data"}
                   </span>
-                  <span class="subline">${escapeHtml(inspection.checked_at ? formatTimestamp(inspection.checked_at) : "Not checked yet")}</span>
+                  <span class="subline">${escapeHtml(inspectionTimestampLabel)}</span>
                   ${inspection.error ? `<span class="subline error">${escapeHtml(inspection.error)}</span>` : ""}
                 </td>
                 <td>
@@ -1419,6 +1548,7 @@ function renderStacks() {
                 <td>
                   ${policyBits.length ? policyBits.map((value) => badge(value, "warn")).join(" ") : badge("agent-ready", "good")}
                   <span class="subline">${escapeHtml(accessPrimary)}</span>
+                  <span class="subline">${escapeHtml(strategyHint)}</span>
                   ${accessSecondary ? `<span class="subline">${escapeHtml(accessSecondary)}</span>` : ""}
                 </td>
                 <td>
@@ -1444,7 +1574,7 @@ function renderStacks() {
                         <div class="stack-detail-grid">
                           <div class="stack-detail-card">
                             <strong>Inspection Details</strong>
-                            <span class="subline">${escapeHtml(inspection.checked_at ? `Checked ${formatTimestamp(inspection.checked_at)}` : "No completed inspection yet.")}</span>
+                            <span class="subline">${escapeHtml(inspection.checked_at ? inspection.derived_from_update ? `Marked current after successful update ${formatTimestamp(inspection.checked_at)}` : `Checked ${formatTimestamp(inspection.checked_at)}` : "No completed inspection yet.")}</span>
                             ${detailReport}
                           </div>
                           <div class="stack-detail-card">
@@ -1508,6 +1638,7 @@ function renderDockerHistorySummary(filteredItems = filteredDockerHistoryItems()
 }
 
 function renderDockerHistoryRow(item) {
+  const updatedAt = formatTimestampParts(item.updated_at);
   const imageDisplay =
     item.from_ref && item.to_ref && item.from_ref !== item.to_ref
       ? `${item.from_ref} -> ${item.to_ref}`
@@ -1518,7 +1649,10 @@ function renderDockerHistoryRow(item) {
 
   return `
     <tr>
-      <td><span class="history-cell">${escapeHtml(formatTimestamp(item.updated_at))}</span></td>
+      <td>
+        <span class="history-date">${escapeHtml(updatedAt.date)}</span>
+        <span class="history-time">${escapeHtml(updatedAt.time)}</span>
+      </td>
       <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.stack))}">${escapeHtml(historyDisplayValue(item.stack))}</span></td>
       <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.component))}">${escapeHtml(historyDisplayValue(item.component))}</span></td>
       <td><span class="history-cell table-clip" title="${escapeHtml(historyDisplayValue(item.host))}">${escapeHtml(historyDisplayValue(item.host))}</span></td>
@@ -2040,8 +2174,14 @@ function renderSettings() {
   setInputValue("public-install-script-url", settings.public.install_script_url_override || "");
   setInputValue("public-agent-compose-dir", settings.public.agent_compose_dir || "");
   setInputValue("public-rackpatch-compose-dir", settings.public.rackpatch_compose_dir || "");
+  setInputValue("docker-version-strategy", dockerUpdates.version_strategy || "stable");
+  setInputValue("docker-semver-policy", dockerUpdates.semver_policy || "patch");
+  setCheckboxValue("docker-allow-prerelease", dockerUpdates.allow_prerelease);
+  setCheckboxValue("docker-allow-major-upgrades", dockerUpdates.allow_major_upgrades);
+  setCheckboxValue("docker-resolve-to-digest", dockerUpdates.resolve_to_digest !== false);
   setInputValue("docker-backup-retention", String(dockerUpdates.backup_retention || 3));
-  document.getElementById("docker-run-backup-commands").checked = Boolean(dockerUpdates.run_backup_commands);
+  setCheckboxValue("docker-run-backup-commands", dockerUpdates.run_backup_commands);
+  document.getElementById("docker-update-policy-help").textContent = renderDockerPolicyHelp(dockerUpdates);
   setInputValue("telegram-chat-ids", settings.telegram.chat_ids_csv || "");
   if (document.activeElement !== document.getElementById("telegram-bot-token")) {
     document.getElementById("telegram-bot-token").value = "";
@@ -2063,6 +2203,11 @@ function renderSettings() {
     `Public repo: ${settings.public.repo_url}@${settings.public.repo_ref}`,
     `Agent compose dir: ${settings.public.agent_compose_dir}`,
     `Rackpatch compose dir: ${settings.public.rackpatch_compose_dir}`,
+    `Docker version strategy: ${dockerUpdates.version_strategy || "stable"}`,
+    `Docker semver policy: ${dockerUpdates.semver_policy || "patch"}`,
+    `Docker prereleases: ${dockerUpdates.allow_prerelease ? "allowed" : "disabled"}`,
+    `Docker major upgrades: ${dockerUpdates.allow_major_upgrades ? "allowed" : "blocked"}`,
+    `Docker digest resolution: ${dockerUpdates.resolve_to_digest === false ? "disabled" : "enabled"}`,
     `Docker backup retention: ${dockerUpdates.backup_retention || 3}`,
     `Docker backup commands: ${dockerUpdates.run_backup_commands ? "enabled" : "disabled"}`,
     `Host maintenance: opt-in via a limited helper command, not broad sudo.`,
@@ -2554,9 +2699,17 @@ function editHostEntry(hostName) {
 
 async function saveDockerUpdateSettings() {
   const retentionValue = document.getElementById("docker-backup-retention").value;
+  const formSettings = {
+    version_strategy: document.getElementById("docker-version-strategy").value,
+    semver_policy: document.getElementById("docker-semver-policy").value,
+    allow_prerelease: document.getElementById("docker-allow-prerelease").checked,
+    allow_major_upgrades: document.getElementById("docker-allow-major-upgrades").checked,
+    resolve_to_digest: document.getElementById("docker-resolve-to-digest").checked,
+  };
   await api("/api/v1/settings/docker-updates", {
     method: "POST",
     body: JSON.stringify({
+      ...formSettings,
       backup_retention: retentionValue ? Number(retentionValue) : 3,
       run_backup_commands: document.getElementById("docker-run-backup-commands").checked,
     }),
@@ -2564,6 +2717,20 @@ async function saveDockerUpdateSettings() {
   await refreshDashboard();
   document.getElementById("docker-update-settings-result").textContent = "Saved Docker update settings.";
   showFlash("Saved Docker update settings.");
+}
+
+function syncDockerPolicyHelpFromForm() {
+  const target = document.getElementById("docker-update-policy-help");
+  if (!target) {
+    return;
+  }
+  target.textContent = renderDockerPolicyHelp({
+    version_strategy: document.getElementById("docker-version-strategy")?.value || "stable",
+    semver_policy: document.getElementById("docker-semver-policy")?.value || "patch",
+    allow_prerelease: document.getElementById("docker-allow-prerelease")?.checked,
+    allow_major_upgrades: document.getElementById("docker-allow-major-upgrades")?.checked,
+    resolve_to_digest: document.getElementById("docker-resolve-to-digest")?.checked,
+  });
 }
 
 async function saveTelegramSettings() {
@@ -2846,6 +3013,11 @@ document.getElementById("docker-update-settings-form").addEventListener("submit"
   event.preventDefault();
   await saveDockerUpdateSettings();
 });
+
+["docker-version-strategy", "docker-semver-policy", "docker-allow-prerelease", "docker-allow-major-upgrades", "docker-resolve-to-digest"]
+  .forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", syncDockerPolicyHelpFromForm);
+  });
 
 document.getElementById("telegram-settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();

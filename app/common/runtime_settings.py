@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from common import config, db
+from common import config, db, image_updates
 
 
 PUBLIC_SETTINGS_KEY = "public_settings"
@@ -143,6 +143,7 @@ def set_public_settings(payload: dict[str, Any]) -> dict[str, str]:
 
 def get_docker_update_settings() -> dict[str, Any]:
     stored = _load_json_setting(DOCKER_UPDATE_SETTINGS_KEY)
+    normalized_policy = image_updates.normalize_policy(stored)
     return {
         "backup_retention": _normalize_positive_int(
             stored.get("backup_retention"),
@@ -152,6 +153,7 @@ def get_docker_update_settings() -> dict[str, Any]:
             stored.get("run_backup_commands"),
             DEFAULT_DOCKER_RUN_BACKUP_COMMANDS,
         ),
+        **normalized_policy,
     }
 
 
@@ -166,6 +168,37 @@ def set_docker_update_settings(payload: dict[str, Any]) -> dict[str, Any]:
         stored["run_backup_commands"] = _normalize_bool(
             payload.get("run_backup_commands"),
             DEFAULT_DOCKER_RUN_BACKUP_COMMANDS,
+        )
+    if "version_strategy" in payload or "strategy" in payload:
+        normalized = image_updates.normalize_policy(
+            {
+                **stored,
+                "version_strategy": payload.get("version_strategy", payload.get("strategy")),
+            }
+        )
+        stored["version_strategy"] = normalized["version_strategy"]
+    if "semver_policy" in payload:
+        normalized = image_updates.normalize_policy(
+            {
+                **stored,
+                "semver_policy": payload.get("semver_policy"),
+            }
+        )
+        stored["semver_policy"] = normalized["semver_policy"]
+    if "allow_prerelease" in payload:
+        stored["allow_prerelease"] = _normalize_bool(
+            payload.get("allow_prerelease"),
+            image_updates.DEFAULT_ALLOW_PRERELEASE,
+        )
+    if "allow_major_upgrades" in payload:
+        stored["allow_major_upgrades"] = _normalize_bool(
+            payload.get("allow_major_upgrades"),
+            image_updates.DEFAULT_ALLOW_MAJOR_UPGRADES,
+        )
+    if "resolve_to_digest" in payload:
+        stored["resolve_to_digest"] = _normalize_bool(
+            payload.get("resolve_to_digest"),
+            image_updates.DEFAULT_RESOLVE_TO_DIGEST,
         )
     _save_json_setting(DOCKER_UPDATE_SETTINGS_KEY, stored)
     return get_docker_update_settings()

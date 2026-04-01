@@ -91,6 +91,14 @@
             </div>
             <section class="panel">
               <div class="section-head">
+                <h3>Pending Docker Updates</h3>
+                <p>Preview the exact service versions rackpatch wants to apply before you approve live updates.</p>
+              </div>
+              <div id="overview-docker-pending-summary" class="meta-block"></div>
+              <div id="overview-docker-pending" class="table-shell"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
                 <h3>Release Status</h3>
                 <p>Compare this control plane and its agents with the latest GitHub release.</p>
               </div>
@@ -304,14 +312,43 @@
               <section class="panel">
                 <div class="section-head">
                   <h3>Docker Update Settings</h3>
-                  <p>Control lightweight pre-update backups for agent-driven Docker stack updates.</p>
+                  <p>Control how rackpatch selects Docker image updates, plus lightweight pre-update backups.</p>
                 </div>
                 <form id="docker-update-settings-form" class="stack-form">
+                  <label>
+                    <span class="field-label">Version Strategy</span>
+                    <select id="docker-version-strategy">
+                      <option value="stable">Stable releases</option>
+                      <option value="previous_stable">Previous stable release</option>
+                      <option value="latest">Latest tag</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="field-label">Semver Policy</span>
+                    <select id="docker-semver-policy">
+                      <option value="patch">Patch only</option>
+                      <option value="minor">Minor and patch</option>
+                      <option value="major">Allow any newer major</option>
+                    </select>
+                  </label>
+                  <label class="checkbox-row">
+                    <input id="docker-allow-prerelease" type="checkbox" />
+                    Include prerelease tags like beta or rc builds
+                  </label>
+                  <label class="checkbox-row">
+                    <input id="docker-allow-major-upgrades" type="checkbox" />
+                    Allow major version jumps automatically
+                  </label>
+                  <label class="checkbox-row">
+                    <input id="docker-resolve-to-digest" type="checkbox" />
+                    Resolve selected tags to immutable image digests before applying updates
+                  </label>
                   <input id="docker-backup-retention" type="number" min="1" step="1" placeholder="3" />
                   <label class="checkbox-row">
                     <input id="docker-run-backup-commands" type="checkbox" />
                     Also run stack-specific <code>backup_commands</code> during Docker live updates
                   </label>
+                  <div id="docker-update-policy-help" class="meta-block"></div>
                   <button type="submit">Save Docker Update Settings</button>
                 </form>
                 <p id="docker-update-settings-result" class="hint"></p>

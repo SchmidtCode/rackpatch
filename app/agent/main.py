@@ -13,12 +13,13 @@ import tarfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import docker
 import requests
 
-from common import config
+from common import config, image_updates
 
 
 SERVER_URL = config.env("RACKPATCH_SERVER_URL", "http://localhost:9080").rstrip("/")
@@ -626,9 +627,185 @@ def _registry_digest(
     return payload["digest"], payload["error"]
 
 
+def _resolve_compose_env_path(project_dir: str, env_file: str) -> Path:
+    path = Path(str(env_file).strip())
+    if path.is_absolute():
+        return path
+    return Path(project_dir) / path
+
+
+def _parse_env_assignment(line: str) -> dict[str, str] | None:
+    stripped = line.lstrip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    indent = line[: len(line) - len(stripped)]
+    body = stripped
+    export_prefix = ""
+    if body.startswith("export "):
+        export_prefix = "export "
+        body = body[len("export ") :]
+    if "=" not in body:
+        return None
+    key, value = body.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    return {
+        "indent": indent,
+        "export_prefix": export_prefix,
+        "key": key,
+        "value": value.strip(),
+    }
+
+
+def _env_image_bindings(project_dir: str, compose_env_files: list[str]) -> dict[str, list[dict[str, str]]]:
+    bindings_by_ref: dict[str, list[dict[str, str]]] = {}
+    for env_file in compose_env_files:
+        env_path = _resolve_compose_env_path(project_dir, env_file)
+        if not env_path.exists():
+            continue
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_assignment(line)
+            if not parsed:
+                continue
+            value = str(parsed["value"] or "").strip()
+            if not image_updates.is_image_ref(value):
+                continue
+            bindings_by_ref.setdefault(value, []).append(
+                {
+                    "env_file": str(env_file),
+                    "path": str(env_path),
+                    "key": parsed["key"],
+                    "value": value,
+                }
+            )
+    return bindings_by_ref
+
+
+def _render_env_file_text(env_path: Path, replacements: dict[str, str]) -> str:
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    rendered: list[str] = []
+    updated_keys: set[str] = set()
+    for line in lines:
+        parsed = _parse_env_assignment(line)
+        if not parsed:
+            rendered.append(line)
+            continue
+        key = parsed["key"]
+        if key not in replacements:
+            rendered.append(line)
+            continue
+        rendered.append(f"{parsed['indent']}{parsed['export_prefix']}{key}={replacements[key]}")
+        updated_keys.add(key)
+
+    missing_keys = [key for key in replacements if key not in updated_keys]
+    if missing_keys and rendered and rendered[-1] != "":
+        rendered.append("")
+    for key in missing_keys:
+        rendered.append(f"{key}={replacements[key]}")
+    return "\n".join(rendered).rstrip("\n") + "\n"
+
+
+def _build_temp_compose_env_files(
+    project_dir: str,
+    compose_env_files: list[str],
+    replacements_by_path: dict[str, dict[str, str]],
+) -> tuple[TemporaryDirectory[str], list[str]]:
+    temp_dir: TemporaryDirectory[str] = TemporaryDirectory(prefix="rackpatch-compose-env-")
+    rendered_files: list[str] = []
+    for index, env_file in enumerate(compose_env_files):
+        env_path = _resolve_compose_env_path(project_dir, env_file)
+        temp_path = Path(temp_dir.name) / f"{index:02d}-{env_path.name or 'env'}"
+        temp_path.write_text(
+            _render_env_file_text(env_path, replacements_by_path.get(str(env_path), {})),
+            encoding="utf-8",
+        )
+        rendered_files.append(str(temp_path))
+    return temp_dir, rendered_files
+
+
+def _persist_env_replacements(replacements_by_path: dict[str, dict[str, str]]) -> None:
+    for path_str, replacements in replacements_by_path.items():
+        env_path = Path(path_str)
+        env_path.write_text(_render_env_file_text(env_path, replacements), encoding="utf-8")
+
+
+def _env_replacement_access_error(replacements_by_path: dict[str, dict[str, str]]) -> str | None:
+    for path_str, replacements in replacements_by_path.items():
+        if not replacements:
+            continue
+        env_path = Path(path_str)
+        target = env_path if env_path.exists() else env_path.parent
+        if not os.access(target, os.W_OK):
+            return f"cannot write updated image references to {env_path}"
+    return None
+
+
+def _select_env_ref_targets(
+    project_dir: str,
+    compose_env_files: list[str],
+    config_payload: dict[str, Any],
+    policy: dict[str, Any] | None,
+    client: docker.DockerClient,
+    registry_cache: dict[str, dict[str, str | None]],
+) -> dict[str, Any]:
+    normalized_policy = image_updates.normalize_policy(policy)
+    bindings_by_ref = _env_image_bindings(project_dir, compose_env_files)
+    selection_cache: dict[str, dict[str, Any]] = {}
+    service_targets: dict[str, dict[str, Any]] = {}
+    replacements_by_path: dict[str, dict[str, str]] = {}
+
+    for service_name in sorted(config_payload.get("services") or {}):
+        service_def = (config_payload.get("services") or {}).get(service_name) or {}
+        ref = str(service_def.get("image") or "").strip()
+        if not ref:
+            continue
+        bindings = list(bindings_by_ref.get(ref) or [])
+        if bindings and ref not in selection_cache:
+            selection_cache[ref] = image_updates.choose_target_ref(
+                ref,
+                normalized_policy,
+                resolve_digest=lambda candidate_ref: _registry_digest(client, candidate_ref, registry_cache),
+            )
+
+        if bindings:
+            base_choice = dict(selection_cache[ref])
+        else:
+            base_choice = {
+                "current_ref": ref,
+                "target_ref": ref,
+                "target_tag": "",
+                "target_digest": "",
+                "strategy": normalized_policy["version_strategy"],
+                "semver_policy": normalized_policy["semver_policy"],
+                "allow_prerelease": normalized_policy["allow_prerelease"],
+                "allow_major_upgrades": normalized_policy["allow_major_upgrades"],
+                "resolve_to_digest": normalized_policy["resolve_to_digest"],
+                "reason": "image ref is not managed through compose env files",
+                "changed": False,
+                "error": "",
+            }
+        base_choice["env_managed"] = bool(bindings)
+        base_choice["env_bindings"] = [{"env_file": binding["env_file"], "key": binding["key"]} for binding in bindings]
+        service_targets[service_name] = base_choice
+
+        if bindings and base_choice.get("target_ref") and base_choice["target_ref"] != ref:
+            for binding in bindings:
+                replacements_by_path.setdefault(binding["path"], {})[binding["key"]] = str(base_choice["target_ref"])
+
+    return {
+        "policy": normalized_policy,
+        "service_targets": service_targets,
+        "replacements_by_path": replacements_by_path,
+    }
+
+
 def _inspect_stack_services(
     project_dir: str,
     compose_env_files: list[str],
+    *,
+    image_strategy: str = "",
+    version_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config_result = _compose_config_json(project_dir, compose_env_files)
     config_payload = config_result["payload"]
@@ -637,6 +814,8 @@ def _inspect_stack_services(
         raise RuntimeError("docker engine is not available")
 
     registry_cache: dict[str, dict[str, str | None]] = {}
+    normalized_policy = image_updates.normalize_policy(version_policy)
+    managed_targets: dict[str, dict[str, Any]] = {}
     report = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "service_count": 0,
@@ -645,8 +824,20 @@ def _inspect_stack_services(
         "status": "unknown",
         "services": [],
         "compose_warnings": list(config_result.get("warnings") or []),
+        "image_strategy": image_strategy or "compose-default",
+        "version_policy": normalized_policy,
     }
     try:
+        if image_strategy == "env-ref":
+            managed_targets = _select_env_ref_targets(
+                project_dir,
+                compose_env_files,
+                config_payload,
+                normalized_policy,
+                client,
+                registry_cache,
+            ).get("service_targets") or {}
+
         services = config_payload.get("services") or {}
         for service_name in sorted(services):
             service_def = services.get(service_name) or {}
@@ -667,6 +858,14 @@ def _inspect_stack_services(
                 continue
 
             report["image_count"] += 1
+            target = managed_targets.get(service_name)
+            if target:
+                service_report["target_ref"] = target.get("target_ref") or ref
+                service_report["strategy"] = target.get("strategy") or normalized_policy["version_strategy"]
+                service_report["update_reason"] = target.get("reason") or ""
+                service_report["env_managed"] = bool(target.get("env_managed"))
+                service_report["env_bindings"] = list(target.get("env_bindings") or [])
+
             try:
                 image_attrs = client.images.get(ref).attrs
                 service_report["local_digest"] = _local_digest(image_attrs, ref)
@@ -674,19 +873,39 @@ def _inspect_stack_services(
                 service_report["status"] = "missing-local"
                 service_report["error"] = str(exc)
 
-            service_report["remote_digest"], registry_error = _registry_digest(client, ref, registry_cache)
+            lookup_ref = str((target or {}).get("target_ref") or ref)
+            preset_digest = str((target or {}).get("target_digest") or "")
+            registry_error = str((target or {}).get("error") or "")
+            if preset_digest:
+                service_report["remote_digest"] = preset_digest
+            else:
+                service_report["remote_digest"], discovered_registry_error = _registry_digest(client, lookup_ref, registry_cache)
+                registry_error = registry_error or str(discovered_registry_error or "")
+
             if registry_error and service_report["status"] == "unknown":
+                if target:
+                    service_report["status"] = "policy-error"
+                else:
+                    service_report["status"] = "registry-error"
+                service_report["error"] = registry_error
+            elif not target and service_report["status"] == "unknown" and service_report["remote_digest"] is None:
                 service_report["status"] = "registry-error"
                 service_report["error"] = registry_error
 
             if service_report["status"] == "unknown":
                 if not service_report["local_digest"]:
                     service_report["status"] = "unknown-local-digest"
-                elif service_report["local_digest"] == service_report["remote_digest"]:
-                    service_report["status"] = "up-to-date"
-                else:
+                elif (
+                    str((target or {}).get("target_ref") or ref) != ref
+                    or (
+                        service_report["remote_digest"]
+                        and service_report["local_digest"] != service_report["remote_digest"]
+                    )
+                ):
                     service_report["status"] = "outdated"
                     report["outdated_count"] += 1
+                else:
+                    service_report["status"] = "up-to-date"
 
             service_report["local_short"] = _short_digest(str(service_report.get("local_digest") or ""))
             service_report["remote_short"] = _short_digest(str(service_report.get("remote_digest") or ""))
@@ -696,7 +915,7 @@ def _inspect_stack_services(
 
     if any(item["status"] == "outdated" for item in report["services"]):
         report["status"] = "outdated"
-    elif any(item["status"] in {"registry-error", "missing-local", "unknown-local-digest"} for item in report["services"]):
+    elif any(item["status"] in {"policy-error", "registry-error", "missing-local", "unknown-local-digest"} for item in report["services"]):
         report["status"] = "warning"
     elif report["image_count"] == 0:
         report["status"] = "no-images"
@@ -1045,6 +1264,8 @@ def docker_check(payload: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(payload.get("project_dir") or "").strip()
     stack_name = _stack_name_from_payload(payload)
     host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
+    image_strategy = str(payload.get("image_strategy") or "").strip()
+    docker_update_policy = payload.get("docker_update_policy")
     if not project_dir:
         return {"exit_code": 1, "error": "project_dir is required", "stdout": ""}
     access_error = _project_dir_access_error(project_dir)
@@ -1053,7 +1274,12 @@ def docker_check(payload: dict[str, Any]) -> dict[str, Any]:
 
     compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]
     try:
-        report = _inspect_stack_services(project_dir, compose_env_files)
+        report = _inspect_stack_services(
+            project_dir,
+            compose_env_files,
+            image_strategy=image_strategy,
+            version_policy=docker_update_policy if isinstance(docker_update_policy, dict) else None,
+        )
     except Exception as exc:  # noqa: BLE001
         return {"exit_code": 1, "error": str(exc), "stdout": str(exc)}
 
@@ -1091,159 +1317,235 @@ def docker_update(payload: dict[str, Any]) -> dict[str, Any]:
     stack_name = _stack_name_from_payload(payload)
     host = str(payload.get("host") or AGENT_NAME or "localhost").strip() or "localhost"
     compose_env_files = [str(item) for item in (payload.get("compose_env_files") or []) if str(item).strip()]
-    compose_command = _compose_command(compose_env_files)
-    if compose_command is None:
+    image_strategy = str(payload.get("image_strategy") or "").strip()
+    docker_update_policy = payload.get("docker_update_policy") if isinstance(payload.get("docker_update_policy"), dict) else None
+    normalized_policy = image_updates.normalize_policy(docker_update_policy)
+    active_compose_env_files = list(compose_env_files)
+    pending_replacements: dict[str, dict[str, str]] = {}
+    temp_env_dir: TemporaryDirectory[str] | None = None
+    policy_output: list[str] = []
+
+    if _compose_command(compose_env_files) is None:
         return {"exit_code": 1, "error": "docker compose command is not available", "stdout": ""}
-    rc_config, out_config = run_command(compose_command + ["config"], cwd=project_dir)
-    if rc_config != 0:
-        return {"exit_code": rc_config, "stdout": out_config}
-    if bool(payload.get("dry_run", False)):
-        return {
-            "exit_code": 0,
-            "stdout": "\n".join(
-                [
-                    out_config,
-                    "dry-run mode validated docker compose config only; no images were pulled and no services were restarted.",
-                ]
-            ).strip(),
-        }
 
-    artifacts: list[dict[str, Any]] = []
-    pruned_artifacts: list[dict[str, Any]] = []
-    rollback_capture: dict[str, Any] | None = None
-    before_state: dict[str, Any] | None = None
-    update_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    backup_output: list[str] = []
-    backup_requested = bool(payload.get("backup_before"))
-    run_backup_commands = _normalize_bool(payload.get("run_backup_commands"), False)
-    backup_commands = [str(item) for item in (payload.get("backup_commands") or []) if str(item).strip()]
-    backup_retention = _normalize_positive_int(payload.get("backup_retention"), 3)
-    rackpatch_managed = bool(payload.get("rackpatch_managed"))
-    rackpatch_repo_url = str(payload.get("repo_url") or "").strip()
-    rackpatch_release_ref = str(payload.get("release_ref") or payload.get("target_version") or "").strip()
-
-    if backup_requested:
+    if image_strategy == "env-ref":
+        client = docker_client()
+        if client is None:
+            return {"exit_code": 1, "error": "docker engine is not available", "stdout": ""}
+        registry_cache: dict[str, dict[str, str | None]] = {}
         try:
-            archive_path, archive_artifact = _create_stack_backup_archive(stack_name, host, project_dir, update_stamp)
-            del archive_path
-            artifacts.append(archive_artifact)
-            if run_backup_commands and backup_commands:
-                command_artifacts, command_output = _run_backup_commands(
-                    stack_name,
-                    host,
-                    project_dir,
-                    backup_commands,
-                    update_stamp,
-                )
-                seen_paths = {str(item.get("container_path") or "") for item in artifacts}
-                for artifact in command_artifacts:
-                    container_path = str(artifact.get("container_path") or "")
-                    if container_path in seen_paths:
-                        continue
-                    seen_paths.add(container_path)
-                    artifacts.append(artifact)
-                backup_output.extend(command_output)
-            pruned_artifacts = _prune_backup_runs(stack_name, host, backup_retention)
+            config_result = _compose_config_json(project_dir, compose_env_files)
+            target_plan = _select_env_ref_targets(
+                project_dir,
+                compose_env_files,
+                config_result["payload"],
+                normalized_policy,
+                client,
+                registry_cache,
+            )
         except Exception as exc:  # noqa: BLE001
-            stdout_parts = [out_config]
+            client.close()
+            return {"exit_code": 1, "error": str(exc), "stdout": str(exc)}
+        finally:
+            client.close()
+
+        service_targets = target_plan.get("service_targets") or {}
+        pending_replacements = target_plan.get("replacements_by_path") or {}
+        blocking = [
+            f"{service_name}: {str(choice.get('error') or '').strip()}"
+            for service_name, choice in service_targets.items()
+            if choice.get("env_managed") and str(choice.get("error") or "").strip()
+        ]
+        if blocking:
+            message = "Unable to resolve a safe target image for this policy.\n" + "\n".join(blocking[:6])
+            return {"exit_code": 1, "error": blocking[0], "stdout": message}
+
+        writable_error = _env_replacement_access_error(pending_replacements)
+        if writable_error:
+            return {"exit_code": 1, "error": writable_error, "stdout": writable_error}
+
+        changed_targets = [
+            f"{service_name}: {choice.get('current_ref')} -> {choice.get('target_ref')}"
+            for service_name, choice in service_targets.items()
+            if choice.get("env_managed") and choice.get("target_ref") and choice.get("target_ref") != choice.get("current_ref")
+        ]
+        policy_output = [
+            f"Image strategy: {normalized_policy['version_strategy']} ({normalized_policy['semver_policy']})",
+            *(changed_targets[:12] or ["No env-backed image references needed a tag change before pull/up."]),
+        ]
+        if pending_replacements:
+            temp_env_dir, active_compose_env_files = _build_temp_compose_env_files(
+                project_dir,
+                compose_env_files,
+                pending_replacements,
+            )
+
+    compose_command = _compose_command(active_compose_env_files)
+    assert compose_command is not None
+    try:
+        rc_config, out_config = run_command(compose_command + ["config"], cwd=project_dir)
+        if rc_config != 0:
+            return {"exit_code": rc_config, "stdout": _join_output(out_config, "\n".join(policy_output))}
+        if bool(payload.get("dry_run", False)):
+            return {
+                "exit_code": 0,
+                "stdout": "\n".join(
+                    [
+                        out_config,
+                        *policy_output,
+                        "dry-run mode validated docker compose config only; no images were pulled and no services were restarted.",
+                    ]
+                ).strip(),
+            }
+
+        artifacts: list[dict[str, Any]] = []
+        pruned_artifacts: list[dict[str, Any]] = []
+        rollback_capture: dict[str, Any] | None = None
+        before_state: dict[str, Any] | None = None
+        update_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup_output: list[str] = []
+        backup_requested = bool(payload.get("backup_before"))
+        run_backup_commands = _normalize_bool(payload.get("run_backup_commands"), False)
+        backup_commands = [str(item) for item in (payload.get("backup_commands") or []) if str(item).strip()]
+        backup_retention = _normalize_positive_int(payload.get("backup_retention"), 3)
+        rackpatch_managed = bool(payload.get("rackpatch_managed"))
+        rackpatch_repo_url = str(payload.get("repo_url") or "").strip()
+        rackpatch_release_ref = str(payload.get("release_ref") or payload.get("target_version") or "").strip()
+
+        if backup_requested:
+            try:
+                archive_path, archive_artifact = _create_stack_backup_archive(stack_name, host, project_dir, update_stamp)
+                del archive_path
+                artifacts.append(archive_artifact)
+                if run_backup_commands and backup_commands:
+                    command_artifacts, command_output = _run_backup_commands(
+                        stack_name,
+                        host,
+                        project_dir,
+                        backup_commands,
+                        update_stamp,
+                    )
+                    seen_paths = {str(item.get("container_path") or "") for item in artifacts}
+                    for artifact in command_artifacts:
+                        container_path = str(artifact.get("container_path") or "")
+                        if container_path in seen_paths:
+                            continue
+                        seen_paths.add(container_path)
+                        artifacts.append(artifact)
+                    backup_output.extend(command_output)
+                pruned_artifacts = _prune_backup_runs(stack_name, host, backup_retention)
+            except Exception as exc:  # noqa: BLE001
+                stdout_parts = [out_config, *policy_output]
+                if backup_output:
+                    stdout_parts.extend(backup_output)
+                stdout_parts.append(str(exc))
+                return {
+                    "exit_code": 1,
+                    "error": f"failed to capture stack backup: {exc}",
+                    "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                    "artifacts": artifacts,
+                    "pruned_artifacts": pruned_artifacts,
+                }
+
+        try:
+            before_state = _capture_stack_state(project_dir, compose_env_files)
+            before_state.update({"stack_name": stack_name, "host": host})
+            rollback_capture = _write_rollback_capture(stack_name, before_state)
+            artifacts.append(
+                {
+                    "kind": "rollback",
+                    "target_ref": stack_name,
+                    "path": rollback_capture["capture_path"],
+                    "container_path": rollback_capture["capture_path"],
+                    "source": "agent-docker-update",
+                    "host": host,
+                    "latest_path": rollback_capture["latest_path"],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            stdout_parts = [out_config, *policy_output]
             if backup_output:
                 stdout_parts.extend(backup_output)
             stdout_parts.append(str(exc))
             return {
                 "exit_code": 1,
-                "error": f"failed to capture stack backup: {exc}",
+                "error": f"failed to capture rollback metadata: {exc}",
                 "stdout": "\n".join(part for part in stdout_parts if part).strip(),
                 "artifacts": artifacts,
                 "pruned_artifacts": pruned_artifacts,
             }
 
-    try:
-        before_state = _capture_stack_state(project_dir, compose_env_files)
-        before_state.update({"stack_name": stack_name, "host": host})
-        rollback_capture = _write_rollback_capture(stack_name, before_state)
-        artifacts.append(
-            {
-                "kind": "rollback",
-                "target_ref": stack_name,
-                "path": rollback_capture["capture_path"],
-                "container_path": rollback_capture["capture_path"],
-                "source": "agent-docker-update",
-                "host": host,
-                "latest_path": rollback_capture["latest_path"],
+        if rackpatch_managed:
+            if not rackpatch_repo_url:
+                stdout_parts = [out_config, *policy_output]
+                if backup_output:
+                    stdout_parts.extend(backup_output)
+                stdout_parts.append("rackpatch-managed stack update is missing repo_url")
+                return {
+                    "exit_code": 1,
+                    "error": "rackpatch-managed stack update is missing repo_url",
+                    "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                    "artifacts": artifacts,
+                    "pruned_artifacts": pruned_artifacts,
+                }
+            rc_update, out_update = _run_rackpatch_stack_update(project_dir, rackpatch_repo_url, rackpatch_release_ref)
+            stdout_parts = [out_config, *policy_output]
+            if backup_output:
+                stdout_parts.extend(backup_output)
+            stdout_parts.append(out_update)
+            result: dict[str, Any] = {
+                "exit_code": rc_update,
+                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                "artifacts": artifacts,
+                "pruned_artifacts": pruned_artifacts,
+                "release_ref": rackpatch_release_ref or None,
+                "rackpatch_managed": True,
             }
-        )
-    except Exception as exc:  # noqa: BLE001
-        stdout_parts = [out_config]
-        if backup_output:
-            stdout_parts.extend(backup_output)
-        stdout_parts.append(str(exc))
-        return {
-            "exit_code": 1,
-            "error": f"failed to capture rollback metadata: {exc}",
-            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-            "artifacts": artifacts,
-            "pruned_artifacts": pruned_artifacts,
-        }
+        else:
+            rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
+            if rc_pull != 0:
+                stdout_parts = [out_config, *policy_output]
+                if backup_output:
+                    stdout_parts.extend(backup_output)
+                stdout_parts.append(out_pull)
+                return {
+                    "exit_code": rc_pull,
+                    "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                    "artifacts": artifacts,
+                    "pruned_artifacts": pruned_artifacts,
+                }
+            rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
+            stdout_parts = [out_config, *policy_output]
+            if backup_output:
+                stdout_parts.extend(backup_output)
+            stdout_parts.extend([out_pull, out_up])
+            result = {
+                "exit_code": rc_up,
+                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
+                "artifacts": artifacts,
+                "pruned_artifacts": pruned_artifacts,
+            }
+            if rc_up == 0 and pending_replacements:
+                try:
+                    _persist_env_replacements(pending_replacements)
+                except Exception as exc:  # noqa: BLE001
+                    result["exit_code"] = 1
+                    result["error"] = f"services updated but failed to persist env image refs: {exc}"
+                    result["stdout"] = _join_output(result["stdout"], str(exc))
 
-    if rackpatch_managed:
-        if not rackpatch_repo_url:
-            stdout_parts = [out_config]
-            if backup_output:
-                stdout_parts.extend(backup_output)
-            stdout_parts.append("rackpatch-managed stack update is missing repo_url")
-            return {
-                "exit_code": 1,
-                "error": "rackpatch-managed stack update is missing repo_url",
-                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-                "artifacts": artifacts,
-                "pruned_artifacts": pruned_artifacts,
-            }
-        rc_update, out_update = _run_rackpatch_stack_update(project_dir, rackpatch_repo_url, rackpatch_release_ref)
-        stdout_parts = [out_config]
-        if backup_output:
-            stdout_parts.extend(backup_output)
-        stdout_parts.append(out_update)
-        result: dict[str, Any] = {
-            "exit_code": rc_update,
-            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-            "artifacts": artifacts,
-            "pruned_artifacts": pruned_artifacts,
-            "release_ref": rackpatch_release_ref or None,
-            "rackpatch_managed": True,
-        }
-    else:
-        rc_pull, out_pull = run_command(compose_command + ["pull"], cwd=project_dir)
-        if rc_pull != 0:
-            stdout_parts = [out_config]
-            if backup_output:
-                stdout_parts.extend(backup_output)
-            stdout_parts.append(out_pull)
-            return {
-                "exit_code": rc_pull,
-                "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-                "artifacts": artifacts,
-                "pruned_artifacts": pruned_artifacts,
-            }
-        rc_up, out_up = run_command(compose_command + ["up", "-d"], cwd=project_dir)
-        stdout_parts = [out_config]
-        if backup_output:
-            stdout_parts.extend(backup_output)
-        stdout_parts.extend([out_pull, out_up])
-        result = {
-            "exit_code": rc_up,
-            "stdout": "\n".join(part for part in stdout_parts if part).strip(),
-            "artifacts": artifacts,
-            "pruned_artifacts": pruned_artifacts,
-        }
-    if rollback_capture:
-        result["rollback_capture"] = rollback_capture
-    if result["exit_code"] == 0 and before_state is not None:
-        try:
-            after_state = _capture_stack_state(project_dir, compose_env_files)
-            result["update_summary"] = _summarize_stack_changes(before_state, after_state, stack_name, host)
-        except Exception as exc:  # noqa: BLE001
-            result["update_summary_error"] = str(exc)
-    return result
+        if rollback_capture:
+            result["rollback_capture"] = rollback_capture
+        result["image_policy"] = normalized_policy
+        if result["exit_code"] == 0 and before_state is not None:
+            try:
+                after_state = _capture_stack_state(project_dir, compose_env_files)
+                result["update_summary"] = _summarize_stack_changes(before_state, after_state, stack_name, host)
+            except Exception as exc:  # noqa: BLE001
+                result["update_summary_error"] = str(exc)
+        return result
+    finally:
+        if temp_env_dir is not None:
+            temp_env_dir.cleanup()
 
 
 def agent_update(payload: dict[str, Any]) -> dict[str, Any]:

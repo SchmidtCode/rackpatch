@@ -420,6 +420,11 @@ button.danger {
   table-layout: fixed;
 }
 
+.history-table th:first-child,
+.history-table td:first-child {
+  width: 144px;
+}
+
 .history-filter-row th {
   padding: 8px 10px 10px;
   background: rgba(10, 20, 24, 0.96);
@@ -438,6 +443,17 @@ button.danger {
   display: inline-block;
   max-width: 100%;
   white-space: nowrap;
+}
+
+.history-date,
+.history-time {
+  display: block;
+  white-space: nowrap;
+}
+
+.history-time {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .table-clip {
@@ -604,6 +620,11 @@ button.danger {
 .meta-block {
   min-height: 120px;
   white-space: pre-wrap;
+}
+
+#overview-docker-pending-summary {
+  min-height: 0;
+  margin-bottom: 14px;
 }
 
 .mono {

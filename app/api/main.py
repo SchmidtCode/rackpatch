@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from common import agents as agent_records, auth, config, control_plane, db, job_catalog, jobs, notify, releases, runtime_settings, site, stack_catalog
+from common import agents as agent_records, auth, config, control_plane, db, image_updates, job_catalog, jobs, notify, releases, runtime_settings, site, stack_catalog
 
 
 app = FastAPI(title=config.APP_NAME, version=config.APP_VERSION)
@@ -389,6 +389,24 @@ def _latest_stack_job_map(kind: str) -> dict[str, dict[str, Any]]:
     return {str(row["target_ref"]): row for row in rows}
 
 
+def _latest_completed_stack_job_map(kind: str) -> dict[str, dict[str, Any]]:
+    rows = db.fetch_all(
+        """
+        SELECT DISTINCT ON (target_ref)
+               id, kind, status, source, target_type, target_ref, payload, result,
+               requested_by, approval_status, target_agent_id, created_at, queued_at,
+               started_at, finished_at
+        FROM jobs
+        WHERE kind = %s
+          AND target_type = 'stack'
+          AND status = 'completed'
+        ORDER BY target_ref, COALESCE(finished_at, started_at, created_at) DESC, created_at DESC
+        """,
+        (kind,),
+    )
+    return {str(row["target_ref"]): row for row in rows}
+
+
 def _agent_capability_set(agent: dict[str, Any] | None) -> set[str]:
     if not agent:
         return set()
@@ -457,6 +475,81 @@ def _docker_stack_access(
     }
 
 
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _short_digest(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("sha256:"):
+        return text[7:19]
+    return text[:12]
+
+
+def _docker_version_label(ref: Any, digest: Any = "", short_hint: Any = "") -> str:
+    raw_ref = str(ref or "").strip()
+    parsed = image_updates.parse_image_ref(raw_ref)
+    digest_value = str(digest or "").strip() or str(short_hint or "").strip()
+    digest_short = _short_digest(digest_value)
+    if parsed:
+        tag = str(parsed.get("tag") or "").strip()
+        if digest_short:
+            return f"{tag} ({digest_short})" if tag else digest_short
+        return tag or raw_ref
+    if digest_short:
+        return f"{raw_ref} ({digest_short})" if raw_ref else digest_short
+    return raw_ref
+
+
+def _inspection_after_successful_update(
+    report: dict[str, Any],
+    latest_update: dict[str, Any] | None,
+    update_summary: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, bool]:
+    normalized_report = dict(report or {})
+    if not latest_update:
+        return normalized_report, normalized_report.get("checked_at"), False
+
+    update_status = str(latest_update.get("status") or "").strip().lower()
+    update_payload = _json_body(latest_update.get("payload"))
+    update_finished_at = _coerce_datetime(latest_update.get("finished_at"))
+    report_checked_at = _coerce_datetime(normalized_report.get("checked_at"))
+    changed_services = int(update_summary.get("changed_services") or 0)
+    newer_than_report = report_checked_at is None or (update_finished_at is not None and update_finished_at >= report_checked_at)
+
+    if update_status != "completed" or _history_bool(update_payload.get("dry_run")) or changed_services < 1 or not newer_than_report:
+        return normalized_report, normalized_report.get("checked_at"), False
+
+    services = []
+    for service in normalized_report.get("services") or []:
+        if not isinstance(service, dict):
+            continue
+        next_service = dict(service)
+        if str(next_service.get("status") or "").strip().lower() == "outdated":
+            next_service["status"] = "up-to-date"
+        services.append(next_service)
+
+    normalized_report["services"] = services
+    normalized_report["status"] = "up-to-date"
+    normalized_report["outdated_count"] = 0
+    checked_at = update_finished_at.isoformat() if update_finished_at is not None else normalized_report.get("checked_at")
+    normalized_report["checked_at"] = checked_at
+    return normalized_report, checked_at, True
+
+
 def _docker_updates_payload() -> dict[str, Any]:
     stacks = site.load_stacks()
     check_jobs = _latest_stack_job_map("docker_check")
@@ -494,6 +587,12 @@ def _docker_updates_payload() -> dict[str, Any]:
         if not isinstance(update_summary, dict):
             update_summary = {}
 
+        report, checked_at, derived_from_update = _inspection_after_successful_update(
+            report,
+            latest_update,
+            update_summary,
+        )
+
         item = {
             **stack,
             "project_dir": stack_catalog.stack_project_dir(stack),
@@ -504,14 +603,15 @@ def _docker_updates_payload() -> dict[str, Any]:
                 "docker_update_dry_run": dry_access,
             },
             "inspection": {
-                "state": inspection_state,
+                "state": str(report.get("status") or inspection_state),
                 "job": latest_check,
                 "report": report,
-                "checked_at": report.get("checked_at")
+                "checked_at": checked_at
                 or (latest_check or {}).get("finished_at")
                 or (latest_check or {}).get("started_at")
                 or (latest_check or {}).get("created_at"),
                 "error": str(check_result.get("error") or ""),
+                "derived_from_update": derived_from_update,
             },
             "latest_update": {
                 "job": latest_update,
@@ -698,6 +798,134 @@ def _docker_history_payload() -> dict[str, Any]:
     }
 
 
+def _pending_docker_update_rows(
+    job_rows: list[dict[str, Any]],
+    check_jobs: dict[str, dict[str, Any]],
+    stacks_by_name: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for job in job_rows:
+        stack_name = str(job.get("target_ref") or "").strip()
+        payload = _json_body(job.get("payload"))
+        check_job = check_jobs.get(stack_name)
+        check_result = _json_body((check_job or {}).get("result"))
+        report = check_result.get("report")
+        if not isinstance(report, dict):
+            report = {}
+        stack = stacks_by_name.get(stack_name) or {}
+        host = (
+            str(payload.get("host") or "").strip()
+            or str(report.get("host") or "").strip()
+            or stack_catalog.stack_runtime_host(stack)
+        )
+        checked_at = (
+            str(report.get("checked_at") or "").strip()
+            or str((check_job or {}).get("finished_at") or "").strip()
+            or str((check_job or {}).get("started_at") or "").strip()
+            or str((check_job or {}).get("created_at") or "").strip()
+        )
+        requested_at = (
+            str(job.get("created_at") or "").strip()
+            or str(job.get("queued_at") or "").strip()
+            or str(job.get("started_at") or "").strip()
+        )
+        services = [
+            item
+            for item in (report.get("services") or [])
+            if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "outdated"
+        ]
+
+        if not services:
+            items.append(
+                {
+                    "id": f"{job['id']}:{stack_name}:preview-unavailable",
+                    "job_id": str(job.get("id") or ""),
+                    "stack": stack_name,
+                    "host": host,
+                    "component": "",
+                    "image": "",
+                    "from_ref": "",
+                    "to_ref": "",
+                    "from_version": "",
+                    "to_version": "",
+                    "checked_at": checked_at or None,
+                    "requested_at": requested_at or None,
+                    "requested_by": str(job.get("requested_by") or ""),
+                    "reason": "Run a fresh Docker check to preview the exact service version changes before approving.",
+                    "preview_available": False,
+                }
+            )
+            continue
+
+        for service_index, service in enumerate(services, start=1):
+            component = str(service.get("service") or "").strip()
+            from_ref = str(service.get("ref") or "").strip()
+            to_ref = str(service.get("target_ref") or service.get("ref") or "").strip()
+            local_digest = str(service.get("local_digest") or service.get("local_short") or "").strip()
+            remote_digest = str(service.get("remote_digest") or service.get("remote_short") or "").strip()
+            image = to_ref or from_ref
+            items.append(
+                {
+                    "id": f"{job['id']}:{stack_name}:{component or service_index}",
+                    "job_id": str(job.get("id") or ""),
+                    "stack": stack_name,
+                    "host": host,
+                    "component": component,
+                    "image": image,
+                    "from_ref": from_ref,
+                    "to_ref": to_ref,
+                    "from_version": _docker_version_label(from_ref, local_digest, local_digest),
+                    "to_version": _docker_version_label(to_ref, remote_digest, remote_digest),
+                    "checked_at": checked_at or None,
+                    "requested_at": requested_at or None,
+                    "requested_by": str(job.get("requested_by") or ""),
+                    "reason": str(service.get("update_reason") or "").strip(),
+                    "preview_available": True,
+                }
+            )
+    return items
+
+
+def _pending_docker_update_payload() -> dict[str, Any]:
+    job_rows = db.fetch_all(
+        """
+        SELECT id, kind, status, source, target_type, target_ref, executor, payload,
+               requested_by, approval_status, target_agent_id, created_at, queued_at,
+               started_at, finished_at
+        FROM jobs
+        WHERE kind = 'docker_update'
+          AND target_type = 'stack'
+          AND approval_status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 100
+        """
+    )
+    check_jobs = _latest_completed_stack_job_map("docker_check")
+    stacks_by_name = {
+        str(stack.get("name") or "").strip(): stack
+        for stack in site.load_stacks()
+        if str(stack.get("name") or "").strip()
+    }
+    items = _pending_docker_update_rows(job_rows, check_jobs, stacks_by_name)
+    checked_times = [_coerce_datetime(item.get("checked_at")) for item in items if item.get("checked_at")]
+    requested_times = [_coerce_datetime(item.get("requested_at")) for item in items if item.get("requested_at")]
+    checked_times = [item for item in checked_times if item is not None]
+    requested_times = [item for item in requested_times if item is not None]
+    summary = {
+        "total_jobs": len(job_rows),
+        "total_rows": len(items),
+        "total_stacks": len({item["stack"] for item in items if item["stack"]}),
+        "preview_ready_rows": sum(1 for item in items if item["preview_available"]),
+        "preview_missing_rows": sum(1 for item in items if not item["preview_available"]),
+        "last_checked_at": max(checked_times).isoformat() if checked_times else None,
+        "last_requested_at": max(requested_times).isoformat() if requested_times else None,
+    }
+    return {
+        "summary": summary,
+        "items": items,
+    }
+
+
 def _settings_payload() -> dict[str, Any]:
     bootstrap_token = auth.ensure_bootstrap_token()
     public_settings = runtime_settings.get_public_settings()
@@ -776,6 +1004,7 @@ def login(payload: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/v1/overview")
 def overview(username: str = Depends(auth.require_user)) -> dict[str, Any]:
     del username
+    pending_docker_updates = _pending_docker_update_payload()
     counts = {
         "agents": db.fetch_one("SELECT COUNT(*) AS value FROM agents")["value"],
         "jobs": db.fetch_one("SELECT COUNT(*) AS value FROM jobs")["value"],
@@ -783,6 +1012,7 @@ def overview(username: str = Depends(auth.require_user)) -> dict[str, Any]:
         "pending_approvals": db.fetch_one(
             "SELECT COUNT(*) AS value FROM jobs WHERE approval_status = 'pending'"
         )["value"],
+        "pending_docker_jobs": int((pending_docker_updates.get("summary") or {}).get("total_jobs") or 0),
         "schedules": db.fetch_one("SELECT COUNT(*) AS value FROM schedules")["value"],
         "backups": db.fetch_one("SELECT COUNT(*) AS value FROM backups")["value"],
     }
@@ -792,6 +1022,7 @@ def overview(username: str = Depends(auth.require_user)) -> dict[str, Any]:
         "site_root": str(site.site_root()),
         "stacks": len(site.load_stacks()),
         "hosts": len(site.load_hosts()),
+        "pending_docker_updates": pending_docker_updates,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

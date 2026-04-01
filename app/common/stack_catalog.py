@@ -76,6 +76,11 @@ def _healthcheck_target(project: dict[str, Any]) -> str:
     return str(project.get("project_name") or "unknown")
 
 
+def _discovered_image_strategy(project: dict[str, Any]) -> str:
+    compose_env_files = [str(item).strip() for item in (project.get("compose_env_files") or []) if str(item).strip()]
+    return "env-ref" if compose_env_files else "compose-default"
+
+
 def _iter_agent_projects() -> list[dict[str, Any]]:
     try:
         from common import db
@@ -155,7 +160,7 @@ def load_discovered_stacks(defined: list[dict[str, Any]] | None = None) -> list[
                 "compose_env_files": project.get("compose_env_files", []),
                 "risk": DEFAULT_DISCOVERED_RISK,
                 "update_mode": DEFAULT_DISCOVERED_UPDATE_MODE,
-                "image_strategy": "compose-default",
+                "image_strategy": _discovered_image_strategy(project),
                 "healthcheck": {
                     "type": "container",
                     "target": _healthcheck_target(project),

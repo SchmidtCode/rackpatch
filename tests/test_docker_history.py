@@ -262,6 +262,185 @@ class DockerHistoryTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["automation_rows"], 1)
         self.assertEqual(payload["summary"]["last_updated_at"], finished_at)
 
+    def test_docker_updates_payload_marks_outdated_stack_current_after_successful_live_update(self) -> None:
+        checked_at = "2026-04-01T09:00:00+00:00"
+        finished_at = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+        latest_check = {
+            "id": "check-1",
+            "status": "completed",
+            "result": {
+                "report": {
+                    "checked_at": checked_at,
+                    "status": "outdated",
+                    "image_count": 2,
+                    "outdated_count": 1,
+                    "services": [
+                        {
+                            "service": "beszel",
+                            "status": "outdated",
+                            "ref": "henrygd/beszel:latest",
+                        },
+                        {
+                            "service": "proxy",
+                            "status": "up-to-date",
+                            "ref": "nginx:latest",
+                        },
+                    ],
+                }
+            },
+            "created_at": checked_at,
+            "started_at": checked_at,
+            "finished_at": checked_at,
+        }
+        latest_update = {
+            "id": "update-1",
+            "status": "completed",
+            "payload": {"dry_run": False},
+            "result": {
+                "update_summary": {
+                    "changed_services": 1,
+                    "stacks": [
+                        {
+                            "stack": "beszel",
+                            "host": "docker-a",
+                            "changed_services": 1,
+                            "services": [
+                                {
+                                    "service": "beszel",
+                                    "from_short": "old-beszel",
+                                    "to_short": "new-beszel",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "created_at": finished_at,
+            "started_at": finished_at,
+            "finished_at": finished_at,
+        }
+
+        with (
+            patch.object(api_main.site, "load_stacks", return_value=[{"name": "beszel", "host": "docker-a", "path": "/srv/compose/beszel"}]),
+            patch.object(api_main, "_latest_stack_job_map", side_effect=[{"beszel": latest_check}, {"beszel": latest_update}]),
+            patch.object(api_main.db, "fetch_all", return_value=[]),
+            patch.object(
+                api_main,
+                "_docker_stack_access",
+                side_effect=[
+                    {"eligible": True, "reason": "", "required_capabilities": [], "target_agent_id": "agent-1"},
+                    {"eligible": True, "reason": "", "required_capabilities": [], "target_agent_id": "agent-1"},
+                    {"eligible": True, "reason": "", "required_capabilities": [], "target_agent_id": "agent-1"},
+                ],
+            ),
+        ):
+            payload = api_main._docker_updates_payload()
+
+        item = payload["items"][0]
+        self.assertEqual(item["inspection"]["state"], "up-to-date")
+        self.assertEqual(item["inspection"]["report"]["status"], "up-to-date")
+        self.assertEqual(item["inspection"]["report"]["outdated_count"], 0)
+        self.assertTrue(item["inspection"]["derived_from_update"])
+        self.assertEqual(item["inspection"]["report"]["services"][0]["status"], "up-to-date")
+        self.assertFalse(item["selection_eligible"])
+        self.assertEqual(payload["summary"]["outdated_stacks"], 0)
+        self.assertEqual(payload["summary"]["outdated_images"], 0)
+
+    def test_pending_docker_update_rows_flatten_latest_check_report(self) -> None:
+        requested_at = datetime(2026, 4, 1, 18, 15, tzinfo=timezone.utc)
+        jobs = [
+            {
+                "id": "job-approve-1",
+                "target_ref": "beszel",
+                "requested_by": "admin",
+                "payload": {"host": "docker-a"},
+                "created_at": requested_at,
+                "queued_at": requested_at,
+            }
+        ]
+        check_jobs = {
+            "beszel": {
+                "id": "check-1",
+                "result": {
+                    "report": {
+                        "host": "docker-a",
+                        "checked_at": "2026-04-01T18:00:00+00:00",
+                        "services": [
+                            {
+                                "service": "beszel",
+                                "status": "outdated",
+                                "ref": "henrygd/beszel:latest",
+                                "target_ref": f"henrygd/beszel:v0.18.7@sha256:{'2' * 64}",
+                                "local_digest": f"sha256:{'1' * 64}",
+                                "remote_digest": f"sha256:{'2' * 64}",
+                                "update_reason": "newer stable release detected",
+                            }
+                        ],
+                    }
+                },
+            }
+        }
+
+        rows = api_main._pending_docker_update_rows(jobs, check_jobs, {"beszel": {"name": "beszel", "host": "docker-a"}})
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["stack"], "beszel")
+        self.assertEqual(rows[0]["component"], "beszel")
+        self.assertEqual(rows[0]["host"], "docker-a")
+        self.assertEqual(rows[0]["from_version"], f"latest ({'1' * 12})")
+        self.assertEqual(rows[0]["to_version"], f"v0.18.7 ({'2' * 12})")
+        self.assertTrue(rows[0]["preview_available"])
+        self.assertEqual(rows[0]["reason"], "newer stable release detected")
+
+    def test_pending_docker_update_rows_include_placeholder_when_preview_missing(self) -> None:
+        jobs = [
+            {
+                "id": "job-approve-2",
+                "target_ref": "media",
+                "requested_by": "admin",
+                "payload": {"host": "docker-b"},
+                "created_at": datetime(2026, 4, 1, 19, 0, tzinfo=timezone.utc),
+            }
+        ]
+
+        rows = api_main._pending_docker_update_rows(jobs, {}, {"media": {"name": "media", "host": "docker-b"}})
+
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["preview_available"])
+        self.assertEqual(rows[0]["stack"], "media")
+        self.assertIn("Run a fresh Docker check", rows[0]["reason"])
+
+    def test_overview_includes_pending_docker_update_summary(self) -> None:
+        pending_payload = {
+            "summary": {"total_jobs": 2, "total_rows": 3},
+            "items": [{"id": "one"}, {"id": "two"}, {"id": "three"}],
+        }
+
+        with (
+            patch.object(api_main, "_pending_docker_update_payload", return_value=pending_payload),
+            patch.object(
+                api_main.db,
+                "fetch_one",
+                side_effect=[
+                    {"value": 4},
+                    {"value": 20},
+                    {"value": 1},
+                    {"value": 3},
+                    {"value": 2},
+                    {"value": 5},
+                ],
+            ),
+            patch.object(api_main.site, "load_stacks", return_value=[{"name": "a"}, {"name": "b"}]),
+            patch.object(api_main.site, "load_hosts", return_value=[{"name": "h1"}]),
+            patch.object(api_main.site, "site_root", return_value=Path("/srv/compose/rackpatch/sites/local")),
+        ):
+            payload = api_main.overview(username="admin")
+
+        self.assertEqual(payload["counts"]["pending_docker_jobs"], 2)
+        self.assertEqual(payload["pending_docker_updates"]["summary"]["total_rows"], 3)
+        self.assertEqual(payload["stacks"], 2)
+        self.assertEqual(payload["hosts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -708,6 +708,8 @@ def _create_docker_stack_jobs(
         child_payload["stack_name"] = stack_name
         child_payload["project_dir"] = stack_catalog.stack_project_dir(stack)
         child_payload["compose_env_files"] = list(stack.get("compose_env_files") or [])
+        child_payload["image_strategy"] = str(stack.get("image_strategy") or "")
+        child_payload["docker_update_policy"] = docker_update_settings
         child_payload["host"] = stack_catalog.stack_runtime_host(stack)
         child_payload["backup_before"] = bool(stack.get("backup_before"))
         child_payload["snapshot_before"] = bool(stack.get("snapshot_before"))

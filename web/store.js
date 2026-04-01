@@ -53,7 +53,7 @@ export function createState() {
       installPreviewMode: "compose",
       jobLogExpanded: false,
       expandedStacks: {},
-      stackUpdateRequiresApproval: true,
+      stackUpdateRequiresApproval: false,
       dockerHistoryFilters: {
         updated_at: "",
         stack: "",

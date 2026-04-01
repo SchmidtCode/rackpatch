@@ -5,6 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+
 docker_stub = types.ModuleType("docker")
 docker_stub.DockerClient = object
 docker_stub.from_env = lambda: None
@@ -120,6 +122,96 @@ class PathValidationTests(unittest.TestCase):
             self.assertIsNotNone(error)
             assert error is not None
             self.assertIn("outside this agent container's mounted stack roots", error)
+
+
+class EnvRefPolicyTests(unittest.TestCase):
+    def test_select_env_ref_targets_only_rewrites_env_managed_refs(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            env_path = project_dir / "compose-images.envvars"
+            env_path.write_text(
+                "APP_IMAGE=ghcr.io/example/app:v1.2.3\nUNRELATED=not-an-image\n",
+                encoding="utf-8",
+            )
+            config_payload = {
+                "services": {
+                    "app": {"image": "ghcr.io/example/app:v1.2.3"},
+                    "db": {"image": "postgres:16"},
+                }
+            }
+            client = MagicMock()
+
+            with patch.object(
+                main.image_updates,
+                "choose_target_ref",
+                return_value={
+                    "current_ref": "ghcr.io/example/app:v1.2.3",
+                    "target_ref": "ghcr.io/example/app:v1.2.4@sha256:" + ("b" * 64),
+                    "target_tag": "v1.2.4",
+                    "target_digest": "sha256:" + ("b" * 64),
+                    "strategy": "stable",
+                    "semver_policy": "patch",
+                    "allow_prerelease": False,
+                    "allow_major_upgrades": False,
+                    "resolve_to_digest": True,
+                    "reason": "newer stable release detected",
+                    "changed": True,
+                    "error": "",
+                },
+            ):
+                result = main._select_env_ref_targets(
+                    str(project_dir),
+                    ["compose-images.envvars"],
+                    config_payload,
+                    {"version_strategy": "stable"},
+                    client,
+                    {},
+                )
+
+        replacements = result["replacements_by_path"][str(env_path)]
+        self.assertEqual(
+            replacements,
+            {
+                "APP_IMAGE": "ghcr.io/example/app:v1.2.4@sha256:" + ("b" * 64),
+            },
+        )
+        self.assertTrue(result["service_targets"]["app"]["env_managed"])
+        self.assertFalse(result["service_targets"]["db"]["env_managed"])
+
+    def test_docker_update_blocks_when_policy_resolution_fails(self) -> None:
+        payload = {
+            "project_dir": "/tmp/example",
+            "stack_name": "example",
+            "compose_env_files": ["compose-images.envvars"],
+            "image_strategy": "env-ref",
+            "docker_update_policy": {"version_strategy": "stable"},
+        }
+        client = MagicMock()
+
+        with (
+            patch.object(main, "_project_dir_access_error", return_value=None),
+            patch.object(main, "_compose_command", return_value=["docker", "compose"]),
+            patch.object(main, "docker_client", return_value=client),
+            patch.object(main, "_compose_config_json", return_value={"payload": {"services": {}}}),
+            patch.object(
+                main,
+                "_select_env_ref_targets",
+                return_value={
+                    "service_targets": {
+                        "app": {
+                            "env_managed": True,
+                            "error": "no matching release tags were found",
+                        }
+                    },
+                    "replacements_by_path": {},
+                },
+            ),
+        ):
+            result = main.docker_update(payload)
+
+        self.assertEqual(result["exit_code"], 1)
+        self.assertIn("Unable to resolve a safe target image", result["stdout"])
+        client.close.assert_called()
 
 
 class AgentLoopTests(unittest.TestCase):
